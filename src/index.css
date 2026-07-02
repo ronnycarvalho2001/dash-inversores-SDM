@@ -1,0 +1,28 @@
+body {
+  margin: 0;
+  padding: 0;
+  background: #111;
+  color: white;
+  font-family: Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  --font-sans: Arial, sans-serif;
+  --font-mono: Consolas, monospace;
+
+  --color-background-primary: #121212;
+  --color-background-secondary: #1f1f1f;
+  --color-background-danger: #3b1d1d;
+
+  --color-border-secondary: #444;
+  --color-border-tertiary: #2f2f2f;
+
+  --color-text-primary: #fff;
+  --color-text-secondary: #ccc;
+  --color-text-tertiary: #888;
+  --color-text-danger: #ff6b6b;
+}
