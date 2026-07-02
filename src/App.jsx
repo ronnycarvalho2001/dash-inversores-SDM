@@ -1386,6 +1386,7 @@ function App() {
               {id:"imbalance", icon:"ti-arrows-left-right", label:"Desbalanceamento"},
               {id:"avail",     icon:"ti-chart-bar",         label:"Disponibilidade"},
               {id:"gen",       icon:"ti-bolt",              label:"Geração"},
+              {id:"combiners", icon:"ti-plug-connected",    label:"Combiners"},
             ].map(tab=>(
               <button key={tab.id} onClick={()=>setActiveTab(tab.id)}
                 style={{padding:"7px 13px",fontSize:13,cursor:"pointer",border:"none",
@@ -1429,11 +1430,13 @@ function App() {
 
         {/* ── Área do gráfico / disponibilidade ── */}
         <div style={{flex:1,margin:"12px 14px 8px",
-          padding:activeTab==="avail"?"0":"14px 16px 8px",minHeight:0,overflow:"hidden",
+          padding:(activeTab==="avail"||activeTab==="combiners")?"0":"14px 16px 8px",minHeight:0,overflow:"hidden",
           display:"flex",flexDirection:"column",
           background:"#131C28",borderRadius:14,border:"1px solid rgba(255,255,255,0.06)",
           boxShadow:"0 12px 32px -16px rgba(0,0,0,0.75)"}}>
-          {!selectedDate||inverters.length===0?(
+          {activeTab==="combiners"?(
+            <CombinerPanel/>
+          ):!selectedDate||inverters.length===0?(
             <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
               color:"var(--color-text-tertiary)",gap:14,textAlign:"center"}}>
               <i className="ti ti-chart-line" style={{fontSize:56}}/>
@@ -2023,6 +2026,306 @@ function GenerationPanel({ allData, selectedDate, setSelectedDate }) {
           )}
 
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Combiners (API INGECON SUN Monitor — corrente DC por combiner) ───────────
+const SB_CACHE_PREFIX  = "ingecon_sb_v1_";
+const SB_FETCH_SPACING_MS = 3500; // espaça chamadas p/ respeitar limite de 20 req distintas/min da API
+
+function ymd(d) {
+  return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,"0")}${String(d.getDate()).padStart(2,"0")}`;
+}
+function last30Dates() {
+  const arr = [];
+  const now = new Date();
+  for (let i=29; i>=0; i--) {
+    const d = new Date(now); d.setDate(d.getDate()-i);
+    arr.push(ymd(d));
+  }
+  return arr;
+}
+function fmtYmd(yyyymmdd) {
+  if (!yyyymmdd) return "—";
+  return `${yyyymmdd.slice(6,8)}/${yyyymmdd.slice(4,6)}/${yyyymmdd.slice(0,4)}`;
+}
+
+// Cada GId termina em ".1ST" ou ".2ST" — caixas de posição ímpar (1) têm 17 entradas
+// reais conectadas, caixas de posição par (2) têm só 16.
+function sbChannelCount(gid) {
+  const m = String(gid).match(/\.(\d+)ST$/i);
+  if (!m) return 17;
+  return (parseInt(m[1],10) % 2 === 1) ? 17 : 16;
+}
+
+// Agrupa as leituras por GId (nunca por SN — SN é do concentrador e é igual p/ toda a planta).
+function groupStringboxByGId(records) {
+  const byGid = {};
+  (records||[]).forEach(r=>{
+    if (!r.GId) return;
+    const time = String(r.DateTime||"").slice(11,16);
+    const count = sbChannelCount(r.GId);
+    if (!byGid[r.GId]) byGid[r.GId] = [];
+    byGid[r.GId].push({ time, idc:(r.Idc||[]).slice(0,count) });
+  });
+  Object.values(byGid).forEach(arr=>arr.sort((a,b)=>a.time.localeCompare(b.time)));
+  return byGid;
+}
+
+// "SM3/INV3.1.1ST" → { inverter:"SDM3" (grupo/optgroup), pos:"3.1.1", label:"INV3.1.1" (item) }
+function combinerMeta(gid) {
+  const m = String(gid).match(/INV(\d+)\.(\d+\.\d+)ST$/i);
+  if (!m) return { inverter:gid, pos:gid, label:gid };
+  const inverter = `SDM${m[1]}`;
+  const pos = `${m[1]}.${m[2]}`;
+  return { inverter, pos, label:`INV${pos}` };
+}
+
+async function fetchStringboxDay(date, isToday, attempt=0) {
+  if (!isToday) {
+    const cached = localStorage.getItem(SB_CACHE_PREFIX+date);
+    if (cached) {
+      try { return JSON.parse(cached); } catch { /* cache corrompido, refaz a busca */ }
+    }
+  }
+  const res = await fetch(`/api/stringbox?date=${date}`);
+  if (res.status===429 && attempt<1) {
+    await new Promise(r=>setTimeout(r,8000));
+    return fetchStringboxDay(date, isToday, attempt+1);
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(()=>({}));
+    throw new Error(body.error || `Erro ${res.status} ao buscar ${date}`);
+  }
+  const records = await res.json();
+  const parsed = groupStringboxByGId(records);
+  if (!isToday) {
+    try { localStorage.setItem(SB_CACHE_PREFIX+date, JSON.stringify(parsed)); } catch { /* quota cheia — segue sem cache */ }
+  }
+  return parsed;
+}
+
+function CombinerChart({ records }) {
+  const canvasRef = useRef(null);
+  const chartRef  = useRef(null);
+  const [ready, setReady] = useState(!!window._chartReady);
+  useEffect(()=>{ if(window._chartReady){registerSmartTooltip();setReady(true);return;} loadChartLibs().then(()=>setReady(true)); },[]);
+
+  useEffect(()=>{
+    if(!ready||!canvasRef.current) return;
+    if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}
+    if(!records.length) return;
+
+    const labels = records.map(r=>r.time);
+    const channelCount = records.reduce((max,r)=>Math.max(max,r.idc.length),0);
+    const datasets = Array.from({length:channelCount},(_,i)=>({
+      label:`Entrada ${i+1}`,
+      data: records.map(r=>{ const v=r.idc[i]; return (v!=null&&isFinite(v))?v:null; }),
+      borderColor: PALETTE[i % PALETTE.length], backgroundColor:"transparent",
+      borderWidth:1.5, pointRadius:0, pointHoverRadius:4, tension:0.35, spanGaps:false,
+    }));
+
+    chartRef.current = new window.Chart(canvasRef.current,{
+      type:"line", data:{labels,datasets},
+      options:{
+        responsive:true, maintainAspectRatio:false, animation:false,
+        interaction:{mode:"index",intersect:false},
+        plugins:{
+          legend:{display:true,position:"bottom",labels:{color:"#8595A6",boxWidth:10,font:{size:10}}},
+          tooltip:{position:"smart",backgroundColor:"rgba(38,50,68,0.97)",titleColor:"#A7B6C6",bodyColor:"#EAF2FB",
+            borderColor:"rgba(46,155,255,0.40)",borderWidth:1,padding:10,
+            callbacks:{title:items=>items[0]?.label??"",
+              label:ctx=>`  ${ctx.dataset.label}: ${ctx.parsed.y!=null?ctx.parsed.y.toFixed(2)+" A":"—"}`,
+              labelTextColor:ctx=>ctx.dataset.borderColor}},
+          zoom:{pan:{enabled:true,mode:"xy",threshold:10},
+            zoom:{wheel:{enabled:true,mode:"xy"},pinch:{enabled:false},drag:{enabled:false},mode:"xy"}},
+        },
+        scales:{
+          x:{afterBuildTicks:axis=>{const tks=axis.ticks;if(!tks.length)return;const toMin=l=>(l&&l.length>=5)?parseInt(l.slice(0,2),10)*60+parseInt(l.slice(3,5),10):null;const f=toMin(axis.getLabelForValue(tks[0].value)),lt=toMin(axis.getLabelForValue(tks[tks.length-1].value));const span=(f!=null&&lt!=null)?Math.max(1,Math.abs(lt-f)):60;const steps=[1,2,5,10,15,20,30,60,120,180];let step=180;for(const s of steps){if(span/s<=14){step=s;break;}}axis.ticks=tks.filter(tk=>{const m=toMin(axis.getLabelForValue(tk.value));return m!=null&&m%step===0;});},
+            ticks:{color:"#8595A6",font:{size:11},maxRotation:0,autoSkip:false,callback:function(value){return this.getLabelForValue(value)||"";}},
+            grid:{color:"rgba(148,163,184,0.10)"},border:{color:"rgba(148,163,184,0.22)"}},
+          y:{position:"left",ticks:{color:"#8595A6",font:{size:11},maxTicksLimit:8,callback:v=>v.toFixed(0)+"A"},
+            grid:{color:"rgba(148,163,184,0.10)"},border:{color:"rgba(148,163,184,0.22)"},
+            title:{display:true,text:"Corrente DC (A)",color:"#A7B6C6",font:{size:11}}},
+        },
+      },
+    });
+    return()=>{if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}};
+  },[ready,records]);
+
+  return(
+    <div style={{position:"relative",width:"100%",height:"100%"}}>
+      {(!ready||!records.length)&&(
+        <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",
+          color:"var(--color-text-tertiary)",fontSize:13}}>
+          {!ready?"Carregando…":"Sem dados para este dia"}
+        </div>
+      )}
+      <canvas ref={canvasRef} role="img" style={{cursor:"crosshair"}} onDoubleClick={()=>chartRef.current?.resetZoom()}/>
+    </div>
+  );
+}
+
+function CombinerPanel() {
+  const dates = useMemo(()=>last30Dates(),[]);
+  const today = dates[dates.length-1];
+  const [dayData, setDayData]   = useState({});   // { [date]: { [GId]: {time,idc[]}[] } }
+  const [progress, setProgress] = useState({loaded:0,total:dates.length});
+  const [selDate, setSelDate]   = useState(today);
+  const [selGid, setSelGid]     = useState(null);
+  const [fatalError, setFatalError] = useState(null);
+
+  useEffect(()=>{
+    // Flag local por execução do efeito — um useRef compartilhado não isolaria
+    // corretamente remounts (StrictMode em dev, ou trocar de aba e voltar rápido):
+    // o cleanup de uma execução antiga acabaria cancelando a corrida da nova.
+    let cancelled = false;
+    const order = dates.slice().reverse(); // hoje primeiro (dado mais recente possível), depois regride no tempo
+    setProgress({loaded:0,total:order.length});
+
+    (async () => {
+      let loaded = 0;
+      for (const date of order) {
+        if (cancelled) return;
+        const isToday = date === today;
+        try {
+          const parsed = await fetchStringboxDay(date, isToday);
+          if (cancelled) return;
+          setDayData(prev=>({...prev,[date]:parsed}));
+        } catch (err) {
+          if (loaded===0) setFatalError(err.message);
+        }
+        loaded++;
+        setProgress({loaded, total:order.length});
+        if (date !== order[order.length-1]) {
+          await new Promise(r=>setTimeout(r, SB_FETCH_SPACING_MS));
+        }
+      }
+    })();
+
+    return ()=>{ cancelled = true; };
+  },[dates, today]);
+
+  useEffect(()=>{ if(Object.keys(dayData).length>0 && fatalError) setFatalError(null); },[dayData, fatalError]);
+
+  const allGids = useMemo(()=>{
+    const s = new Set();
+    Object.values(dayData).forEach(byGid=>Object.keys(byGid).forEach(g=>s.add(g)));
+    return [...s].sort();
+  },[dayData]);
+
+  useEffect(()=>{ if(!selGid && allGids.length) setSelGid(allGids[0]); },[allGids, selGid]);
+
+  const gidsByInverter = useMemo(()=>{
+    const map = {};
+    allGids.forEach(g=>{
+      const {inverter} = combinerMeta(g);
+      if (!map[inverter]) map[inverter] = [];
+      map[inverter].push(g);
+    });
+    return map;
+  },[allGids]);
+
+  const dateIdx = dates.indexOf(selDate);
+  const goPrev = () => { if(dateIdx>0) setSelDate(dates[dateIdx-1]); };
+  const goNext = () => { if(dateIdx<dates.length-1) setSelDate(dates[dateIdx+1]); };
+
+  const dateLoaded = !!dayData[selDate];
+  const records = (selGid && dayData[selDate]?.[selGid]) || [];
+
+  const summary = useMemo(()=>{
+    if (!records.length) return null;
+    const last = records[records.length-1];
+    const vals = last.idc.map((v,i)=>({i,v})).filter(x=>x.v!=null&&isFinite(x.v));
+    if (!vals.length) return null;
+    const min = vals.reduce((a,b)=>b.v<a.v?b:a);
+    const max = vals.reduce((a,b)=>b.v>a.v?b:a);
+    return { time:last.time, min, max };
+  },[records]);
+
+  return(
+    <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",padding:"10px 16px 8px",minHeight:0}}>
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexShrink:0,flexWrap:"wrap"}}>
+
+        {/* Navegação de data (últimos 30 dias) */}
+        <div style={{display:"flex",alignItems:"center",gap:4}}>
+          <button onClick={goPrev} disabled={dateIdx<=0}
+            style={{background:"none",border:"none",cursor:dateIdx>0?"pointer":"default",fontSize:15,
+              color:dateIdx>0?"var(--color-text-secondary)":"var(--color-text-tertiary)",padding:"2px 4px"}}>
+            <i className="ti ti-chevron-left"/>
+          </button>
+          <span style={{fontSize:13,fontWeight:600,minWidth:88,textAlign:"center",fontFamily:"var(--font-mono)"}}>
+            {fmtYmd(selDate)}
+          </span>
+          <button onClick={goNext} disabled={dateIdx>=dates.length-1}
+            style={{background:"none",border:"none",cursor:dateIdx<dates.length-1?"pointer":"default",fontSize:15,
+              color:dateIdx<dates.length-1?"var(--color-text-secondary)":"var(--color-text-tertiary)",padding:"2px 4px"}}>
+            <i className="ti ti-chevron-right"/>
+          </button>
+          {!dateLoaded&&(
+            <span style={{fontSize:13,color:"var(--color-text-tertiary)",display:"flex",alignItems:"center",gap:4}}>
+              <i className="ti ti-loader-2" style={{fontSize:13}}/> carregando…
+            </span>
+          )}
+        </div>
+
+        {/* Seletor de combinador */}
+        <select value={selGid||""} onChange={e=>setSelGid(e.target.value)} disabled={!allGids.length}
+          style={{fontSize:12,maxWidth:220,padding:"5px 10px",borderRadius:7,cursor:"pointer",outline:"none",
+            background:"#1A2433",color:"#E6EDF5",border:"1px solid rgba(255,255,255,0.12)"}}>
+          {Object.entries(gidsByInverter).map(([inv,gids])=>(
+            <optgroup key={inv} label={inv} style={{background:"#18222F",color:"#9FB0C0"}}>
+              {gids.map(g=>(
+                <option key={g} value={g} style={{background:"#18222F",color:"#E6EDF5"}}>
+                  {combinerMeta(g).label}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+
+        {/* Progresso do backfill de 30 dias */}
+        {progress.loaded<progress.total&&(
+          <div style={{display:"flex",alignItems:"center",gap:6,fontSize:13,color:"var(--color-text-tertiary)"}}>
+            <div style={{width:80,height:5,borderRadius:3,background:"var(--color-background-secondary)",overflow:"hidden"}}>
+              <div style={{width:`${(progress.loaded/progress.total*100).toFixed(0)}%`,height:"100%",
+                background:"#2E9BFF",transition:"width 0.3s"}}/>
+            </div>
+            <span>histórico {progress.loaded}/{progress.total}</span>
+          </div>
+        )}
+
+        {/* Resumo da última leitura do dia selecionado */}
+        {summary&&(
+          <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:14,fontSize:13,
+            color:"var(--color-text-secondary)",flexWrap:"wrap"}}>
+            <span>Última leitura <strong style={{fontFamily:"var(--font-mono)"}}>{summary.time}</strong></span>
+            <span style={{color:"#4CAF50"}}>▲ Entrada {summary.max.i+1} ({summary.max.v.toFixed(1)}A)</span>
+            <span style={{color:"#F44336"}}>▼ Entrada {summary.min.i+1} ({summary.min.v.toFixed(1)}A)</span>
+          </div>
+        )}
+      </div>
+
+      {/* Gráfico */}
+      <div style={{flex:1,minHeight:0}}>
+        {fatalError?(
+          <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+            gap:10,color:"var(--color-text-tertiary)",textAlign:"center"}}>
+            <i className="ti ti-plug-connected-x" style={{fontSize:40}}/>
+            <div style={{fontSize:13,maxWidth:380}}>{fatalError}</div>
+          </div>
+        ):!allGids.length?(
+          <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+            gap:10,color:"var(--color-text-tertiary)",textAlign:"center"}}>
+            <i className="ti ti-plug-connected" style={{fontSize:40}}/>
+            <div style={{fontSize:13}}>Carregando combiners da API…</div>
+          </div>
+        ):(
+          <CombinerChart records={records}/>
+        )}
       </div>
     </div>
   );
