@@ -2237,7 +2237,7 @@ function CombinerChart({ records, onPointClick }) {
     const labels = records.map(r=>r.time);
     const channelCount = records.reduce((max,r)=>Math.max(max,r.idc.length),0);
     const datasets = Array.from({length:channelCount},(_,i)=>({
-      label:`Entrada ${i+1}`,
+      label:`Combiner ${i+1}`,
       data: records.map(r=>{ const v=r.idc[i]; return (v!=null&&isFinite(v))?v:null; }),
       borderColor: PALETTE[i % PALETTE.length], backgroundColor:"transparent",
       borderWidth:1.5, pointRadius:0, pointHoverRadius:4, tension:0.35, spanGaps:false,
@@ -2294,6 +2294,8 @@ function CombinerPanel() {
   const [selGid, setSelGid]     = useState(null);
   const [fatalError, setFatalError] = useState(null);
   const [selectedTime, setSelectedTime] = useState(null);
+  const [analysisScope, setAnalysisScope] = useState("point"); // "point" | "day"
+  const [sortDir, setSortDir] = useState("asc"); // "asc" (menor→maior) | "desc" (maior→menor)
 
   useEffect(()=>{ setSelectedTime(null); },[selDate]);
 
@@ -2367,7 +2369,7 @@ function CombinerPanel() {
 
   // Ranking de todos os 30 combinadores no horário clicado, separado por 16 vs 17 entradas
   // (comparar direto entre grupos seria injusto — um combinador de 17 soma mais só por ter mais canais).
-  const rankingAnalysis = useMemo(()=>{
+  const pointAnalysis = useMemo(()=>{
     if (!selectedTime) return null;
     const byGid = dayData[selDate];
     if (!byGid) return null;
@@ -2377,23 +2379,47 @@ function CombinerPanel() {
       const vals = rec.idc.filter(v=>v!=null&&isFinite(v));
       if (!vals.length) return null;
       return { gid, label:combinerMeta(gid).label, channelCount:rec.idc.length,
-        avg: vals.reduce((s,v)=>s+v,0)/vals.length, idc:rec.idc };
+        avg: vals.reduce((s,v)=>s+v,0)/vals.length, values:rec.idc };
     }).filter(Boolean);
-
-    const worstEntradas = row => !row ? [] : row.idc
-      .map((v,i)=>({i,v}))
-      .filter(x=>x.v!=null&&isFinite(x.v))
-      .sort((a,b)=>a.v-b.v)
-      .slice(0,4);
-
-    const cohort16 = rows.filter(r=>r.channelCount===16).sort((a,b)=>a.avg-b.avg);
-    const cohort17 = rows.filter(r=>r.channelCount===17).sort((a,b)=>a.avg-b.avg);
     return {
-      cohort16, cohort17,
-      worst16: cohort16[0] ? { ...cohort16[0], worstEntradas:worstEntradas(cohort16[0]) } : null,
-      worst17: cohort17[0] ? { ...cohort17[0], worstEntradas:worstEntradas(cohort17[0]) } : null,
+      cohort16: rows.filter(r=>r.channelCount===16).sort((a,b)=>a.avg-b.avg),
+      cohort17: rows.filter(r=>r.channelCount===17).sort((a,b)=>a.avg-b.avg),
     };
   },[selectedTime, dayData, selDate]);
+
+  // Mesma comparação, mas usando a média de cada entrada ao longo do dia inteiro (não só um horário)
+  const dayAnalysis = useMemo(()=>{
+    const byGid = dayData[selDate];
+    if (!byGid) return null;
+    const rows = Object.entries(byGid).map(([gid,recs])=>{
+      if (!recs.length) return null;
+      const channelCount = recs.reduce((max,r)=>Math.max(max,r.idc.length),0);
+      const sums = Array(channelCount).fill(0), counts = Array(channelCount).fill(0);
+      recs.forEach(r=>r.idc.forEach((v,i)=>{ if(v!=null&&isFinite(v)){ sums[i]+=v; counts[i]++; } }));
+      const channelAvgs = sums.map((s,i)=>counts[i]>0?s/counts[i]:null);
+      const vals = channelAvgs.filter(v=>v!=null);
+      if (!vals.length) return null;
+      return { gid, label:combinerMeta(gid).label, channelCount,
+        avg: vals.reduce((s,v)=>s+v,0)/vals.length, values:channelAvgs };
+    }).filter(Boolean);
+    return {
+      cohort16: rows.filter(r=>r.channelCount===16).sort((a,b)=>a.avg-b.avg),
+      cohort17: rows.filter(r=>r.channelCount===17).sort((a,b)=>a.avg-b.avg),
+    };
+  },[dayData, selDate]);
+
+  const rankingAnalysis = analysisScope==="day" ? dayAnalysis : pointAnalysis;
+
+  // Destaque de cada coluna: o combinador clicado na lista (se pertencer a esse grupo), senão o pior (#1)
+  function worstEntradas(row) {
+    if (!row) return [];
+    return row.values.map((v,i)=>({i,v})).filter(x=>x.v!=null&&isFinite(x.v)).sort((a,b)=>a.v-b.v).slice(0,4);
+  }
+  function highlightFor(arr) {
+    if (!arr || !arr.length) return null;
+    const picked = arr.find(r=>r.gid===selGid) || arr[0];
+    return { ...picked, isWorst: picked.gid===arr[0].gid, worstEntradas: worstEntradas(picked) };
+  }
 
   return(
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",padding:"10px 16px 8px",minHeight:0}}>
@@ -2453,8 +2479,8 @@ function CombinerPanel() {
           <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:14,fontSize:13,
             color:"var(--color-text-secondary)",flexWrap:"wrap"}}>
             <span>Última leitura <strong style={{fontFamily:"var(--font-mono)"}}>{summary.time}</strong></span>
-            <span style={{color:"#4CAF50"}}>▲ Entrada {summary.max.i+1} ({summary.max.v.toFixed(1)}A)</span>
-            <span style={{color:"#F44336"}}>▼ Entrada {summary.min.i+1} ({summary.min.v.toFixed(1)}A)</span>
+            <span style={{color:"#4CAF50"}}>▲ Combiner {summary.max.i+1} ({summary.max.v.toFixed(1)}A)</span>
+            <span style={{color:"#F44336"}}>▼ Combiner {summary.min.i+1} ({summary.min.v.toFixed(1)}A)</span>
             {selectedTime&&(
               <span style={{color:"#2E9BFF",display:"inline-flex",alignItems:"center",gap:4}}>
                 <i className="ti ti-map-pin" style={{fontSize:13}}/><strong>{selectedTime}</strong>
@@ -2469,7 +2495,7 @@ function CombinerPanel() {
       </div>
 
       {/* Gráfico */}
-      <div style={{flex:selectedTime?"1 1 58%":"1 1 auto",minHeight:0}}>
+      <div style={{flex:(analysisScope==="day"||selectedTime)?"1 1 58%":"1 1 auto",minHeight:0}}>
         {fatalError?(
           <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
             gap:10,color:"var(--color-text-tertiary)",textAlign:"center"}}>
@@ -2487,33 +2513,61 @@ function CombinerPanel() {
         )}
       </div>
 
-      {/* Análise: ranking dos 30 combinadores no horário clicado, separado por 16 vs 17 entradas */}
-      {!selectedTime?(
-        <div style={{flexShrink:0,paddingTop:8,fontSize:13,color:"var(--color-text-tertiary)",textAlign:"center"}}>
-          <i className="ti ti-hand-click" style={{marginRight:5}}/>Clique num ponto do gráfico para comparar todos os combinadores nesse horário
+      {/* Análise: ranking dos 30 combinadores, separado por 16 vs 17 entradas */}
+      <div style={{flexShrink:0,paddingTop:8,marginTop:analysisScope==="day"||selectedTime?8:0,
+        display:"flex",alignItems:"center",gap:10}}>
+        <div style={{display:"flex",gap:2,background:"var(--color-background-secondary)",padding:3,borderRadius:8,flexShrink:0}}>
+          {[{id:"point",label:"Ponto clicado"},{id:"day",label:"Dia inteiro"}].map(v=>(
+            <button key={v.id} onClick={()=>setAnalysisScope(v.id)}
+              style={{padding:"4px 11px",fontSize:13,cursor:"pointer",borderRadius:6,border:"none",
+                background:analysisScope===v.id?"#2E9BFF":"transparent",
+                color:analysisScope===v.id?"#fff":"var(--color-text-secondary)",
+                fontWeight:analysisScope===v.id?600:400,transition:"all 0.15s"}}>
+              {v.label}
+            </button>
+          ))}
         </div>
-      ):rankingAnalysis&&(
-        <div style={{flex:"0 0 38%",display:"flex",gap:12,paddingTop:10,marginTop:8,minHeight:0,
-          borderTop:"0.5px solid var(--color-border-tertiary)"}}>
-          {[{title:"17 entradas",arr:rankingAnalysis.cohort17,worst:rankingAnalysis.worst17},
-            {title:"16 entradas",arr:rankingAnalysis.cohort16,worst:rankingAnalysis.worst16}].map(({title,arr,worst})=>(
+        {analysisScope==="point"&&!selectedTime&&(
+          <span style={{fontSize:13,color:"var(--color-text-tertiary)"}}>
+            <i className="ti ti-hand-click" style={{marginRight:5}}/>Clique num ponto do gráfico para comparar todos os combinadores nesse horário
+          </span>
+        )}
+        {rankingAnalysis&&(analysisScope==="day"||selectedTime)&&(
+          <button onClick={()=>setSortDir(d=>d==="asc"?"desc":"asc")}
+            title={sortDir==="asc"?"Ordenando: menor → maior (clique p/ inverter)":"Ordenando: maior → menor (clique p/ inverter)"}
+            style={{display:"flex",alignItems:"center",gap:4,fontSize:13,padding:"4px 9px",cursor:"pointer",
+              borderRadius:6,border:"0.5px solid var(--color-border-secondary)",
+              background:"var(--color-background-secondary)",color:"var(--color-text-secondary)"}}>
+            <i className={`ti ${sortDir==="asc"?"ti-sort-ascending":"ti-sort-descending"}`} style={{fontSize:13}}/>
+            {sortDir==="asc"?"Menor → maior":"Maior → menor"}
+          </button>
+        )}
+      </div>
+
+      {rankingAnalysis&&(analysisScope==="day"||selectedTime)&&(
+        <div style={{flex:"0 0 36%",display:"flex",gap:12,paddingTop:8,minHeight:0}}>
+          {[{title:"17 entradas",arr:rankingAnalysis.cohort17},
+            {title:"16 entradas",arr:rankingAnalysis.cohort16}].map(({title,arr})=>{
+            const highlight = highlightFor(arr);
+            return(
             <div key={title} style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
               <div style={{fontSize:13,fontWeight:600,color:"var(--color-text-tertiary)",textTransform:"uppercase",
                 letterSpacing:"0.05em",marginBottom:6,flexShrink:0}}>
-                Combinadores de {title} — piores às {selectedTime}
+                Combinadores de {title} — {analysisScope==="day"?"médias do dia":`às ${selectedTime}`}
               </div>
-              {worst&&(
+              {highlight&&(
                 <div style={{flexShrink:0,marginBottom:6,padding:"6px 8px",borderRadius:6,
                   background:"rgba(244,67,54,0.08)",border:"1px solid rgba(244,67,54,0.28)"}}>
                   <div style={{fontSize:13,color:"var(--color-text-secondary)"}}>
-                    Menor corrente: <strong style={{color:"#F44336"}}>{worst.label}</strong>
-                    <span style={{color:"var(--color-text-tertiary)"}}> ({worst.avg.toFixed(2)} A méd.)</span>
+                    {highlight.isWorst?"Menor corrente: ":"Selecionado: "}
+                    <strong style={{color:"#F44336"}}>{highlight.label}</strong>
+                    <span style={{color:"var(--color-text-tertiary)"}}> ({highlight.avg.toFixed(2)} A méd.)</span>
                   </div>
-                  <div style={{fontSize:13,color:"var(--color-text-tertiary)",marginTop:2}}>
-                    4 piores entradas:{" "}
-                    {worst.worstEntradas.map((e,i)=>(
+                  <div style={{fontSize:13,color:"var(--color-text-tertiary)",marginTop:2,display:"flex",alignItems:"baseline",gap:5,flexWrap:"wrap"}}>
+                    <span style={{color:"#F44336",fontWeight:700,flexShrink:0}}>▼4</span>
+                    {highlight.worstEntradas.map((e,i)=>(
                       <span key={e.i} style={{color:"var(--color-text-secondary)"}}>
-                        {i>0&&", "}Entrada {e.i+1} ({e.v.toFixed(2)}A)
+                        {i>0&&", "}Combiner {e.i+1} ({e.v.toFixed(2)}A)
                       </span>
                     ))}
                   </div>
@@ -2521,9 +2575,9 @@ function CombinerPanel() {
               )}
               <div style={{overflowY:"auto",flex:1,display:"flex",flexDirection:"column",gap:3}}>
                 {!arr.length?(
-                  <div style={{fontSize:13,color:"var(--color-text-tertiary)"}}>Sem dados neste horário</div>
-                ):arr.map((r,i)=>{
-                  const worst = i===0;
+                  <div style={{fontSize:13,color:"var(--color-text-tertiary)"}}>Sem dados</div>
+                ):(sortDir==="asc"?arr:[...arr].reverse()).map((r,i)=>{
+                  const worst = r.gid===arr[0]?.gid; // sempre a menor corrente, independe da ordem exibida
                   const isSelected = r.gid===selGid;
                   return(
                     <div key={r.gid} onClick={()=>setSelGid(r.gid)}
@@ -2540,7 +2594,8 @@ function CombinerPanel() {
                 })}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
