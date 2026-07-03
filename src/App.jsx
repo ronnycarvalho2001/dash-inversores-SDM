@@ -2383,11 +2383,21 @@ function CombinerPanel() {
       const vals = rec.idc.filter(v=>v!=null&&isFinite(v));
       if (!vals.length) return null;
       return { gid, label:combinerMeta(gid).label, channelCount:rec.idc.length,
-        avg: vals.reduce((s,v)=>s+v,0)/vals.length };
+        avg: vals.reduce((s,v)=>s+v,0)/vals.length, idc:rec.idc };
     }).filter(Boolean);
+
+    const worstEntradas = row => !row ? [] : row.idc
+      .map((v,i)=>({i,v}))
+      .filter(x=>x.v!=null&&isFinite(x.v))
+      .sort((a,b)=>a.v-b.v)
+      .slice(0,4);
+
+    const cohort16 = rows.filter(r=>r.channelCount===16).sort((a,b)=>a.avg-b.avg);
+    const cohort17 = rows.filter(r=>r.channelCount===17).sort((a,b)=>a.avg-b.avg);
     return {
-      cohort16: rows.filter(r=>r.channelCount===16).sort((a,b)=>a.avg-b.avg),
-      cohort17: rows.filter(r=>r.channelCount===17).sort((a,b)=>a.avg-b.avg),
+      cohort16, cohort17,
+      worst16: cohort16[0] ? { ...cohort16[0], worstEntradas:worstEntradas(cohort16[0]) } : null,
+      worst17: cohort17[0] ? { ...cohort17[0], worstEntradas:worstEntradas(cohort17[0]) } : null,
     };
   },[selectedTime, dayData, selDate]);
 
@@ -2491,12 +2501,30 @@ function CombinerPanel() {
       ):rankingAnalysis&&(
         <div style={{flex:"0 0 38%",display:"flex",gap:12,paddingTop:10,marginTop:8,minHeight:0,
           borderTop:"0.5px solid var(--color-border-tertiary)"}}>
-          {[{title:"16 entradas",arr:rankingAnalysis.cohort16},{title:"17 entradas",arr:rankingAnalysis.cohort17}].map(({title,arr})=>(
+          {[{title:"16 entradas",arr:rankingAnalysis.cohort16,worst:rankingAnalysis.worst16},
+            {title:"17 entradas",arr:rankingAnalysis.cohort17,worst:rankingAnalysis.worst17}].map(({title,arr,worst})=>(
             <div key={title} style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
               <div style={{fontSize:13,fontWeight:600,color:"var(--color-text-tertiary)",textTransform:"uppercase",
                 letterSpacing:"0.05em",marginBottom:6,flexShrink:0}}>
                 Combinadores de {title} — piores às {selectedTime}
               </div>
+              {worst&&(
+                <div style={{flexShrink:0,marginBottom:6,padding:"6px 8px",borderRadius:6,
+                  background:"rgba(244,67,54,0.08)",border:"1px solid rgba(244,67,54,0.28)"}}>
+                  <div style={{fontSize:13,color:"var(--color-text-secondary)"}}>
+                    Pior combinador: <strong style={{color:"#F44336"}}>{worst.label}</strong>
+                    <span style={{color:"var(--color-text-tertiary)"}}> ({worst.avg.toFixed(2)} A méd.)</span>
+                  </div>
+                  <div style={{fontSize:13,color:"var(--color-text-tertiary)",marginTop:2}}>
+                    4 piores entradas:{" "}
+                    {worst.worstEntradas.map((e,i)=>(
+                      <span key={e.i} style={{color:"var(--color-text-secondary)"}}>
+                        {i>0&&", "}Entrada {e.i+1} ({e.v.toFixed(2)}A)
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div style={{overflowY:"auto",flex:1,display:"flex",flexDirection:"column",gap:3}}>
                 {!arr.length?(
                   <div style={{fontSize:13,color:"var(--color-text-tertiary)"}}>Sem dados neste horário</div>
