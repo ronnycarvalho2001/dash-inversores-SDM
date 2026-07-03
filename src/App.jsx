@@ -2506,7 +2506,7 @@ function CombinerPanel() {
                 <div style={{flexShrink:0,marginBottom:6,padding:"6px 8px",borderRadius:6,
                   background:"rgba(244,67,54,0.08)",border:"1px solid rgba(244,67,54,0.28)"}}>
                   <div style={{fontSize:13,color:"var(--color-text-secondary)"}}>
-                    Pior combinador: <strong style={{color:"#F44336"}}>{worst.label}</strong>
+                    Menor corrente: <strong style={{color:"#F44336"}}>{worst.label}</strong>
                     <span style={{color:"var(--color-text-tertiary)"}}> ({worst.avg.toFixed(2)} A méd.)</span>
                   </div>
                   <div style={{fontSize:13,color:"var(--color-text-tertiary)",marginTop:2}}>
