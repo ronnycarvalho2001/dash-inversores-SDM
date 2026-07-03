@@ -2495,8 +2495,8 @@ function CombinerPanel() {
       ):rankingAnalysis&&(
         <div style={{flex:"0 0 38%",display:"flex",gap:12,paddingTop:10,marginTop:8,minHeight:0,
           borderTop:"0.5px solid var(--color-border-tertiary)"}}>
-          {[{title:"16 entradas",arr:rankingAnalysis.cohort16,worst:rankingAnalysis.worst16},
-            {title:"17 entradas",arr:rankingAnalysis.cohort17,worst:rankingAnalysis.worst17}].map(({title,arr,worst})=>(
+          {[{title:"17 entradas",arr:rankingAnalysis.cohort17,worst:rankingAnalysis.worst17},
+            {title:"16 entradas",arr:rankingAnalysis.cohort16,worst:rankingAnalysis.worst16}].map(({title,arr,worst})=>(
             <div key={title} style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
               <div style={{fontSize:13,fontWeight:600,color:"var(--color-text-tertiary)",textTransform:"uppercase",
                 letterSpacing:"0.05em",marginBottom:6,flexShrink:0}}>
