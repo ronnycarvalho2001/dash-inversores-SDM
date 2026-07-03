@@ -14,9 +14,10 @@ function yesterdayYmd() {
   return `${dt.getUTCFullYear()}${String(dt.getUTCMonth() + 1).padStart(2, "0")}${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
 
-// A API não expõe diretamente qual SN de inversor corresponde a qual GId de combinador,
-// mas ambos os serviços trazem o mesmo "BoardId" (placa física) — cruzando os dois dá
-// o mapeamento SN → posição real (ex.: "3.2.1"). Usa o dia de ontem (já fechado, cobertura completa).
+// Mapeia BoardId → posição real do combinador (ex.: "3.2.1"). BoardId é o identificador
+// verdadeiramente único por inversor — o serviço de stringbox já traz GId+BoardId juntos,
+// então não precisa cruzar com o serviço de inversores (que tem SNs duplicados/reaproveitados).
+// Usa o dia de ontem (já fechado, cobertura completa).
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     res.setHeader("Allow", "GET");
@@ -31,34 +32,25 @@ export default async function handler(req, res) {
   }
 
   const date = yesterdayYmd();
-  const pid = plantId();
+  const url = `https://www.ingeconsunmonitor.com/api/stringbox/samplesv2/plant/${plantId()}/date/${date}`;
 
-  let invRes, sbRes;
+  let sbRes;
   try {
-    [invRes, sbRes] = await Promise.all([
-      fetch(`https://www.ingeconsunmonitor.com/api/ingecon/samplesv2/plant/${pid}/date/${date}`, { headers }),
-      fetch(`https://www.ingeconsunmonitor.com/api/stringbox/samplesv2/plant/${pid}/date/${date}`, { headers }),
-    ]);
+    sbRes = await fetch(url, { headers });
   } catch {
     return res.status(502).json({ error: "Falha ao contatar a API do INGECON SUN Monitor" });
   }
-  if (!invRes.ok || !sbRes.ok) {
-    return res.status(502).json({ error: "Falha ao montar o mapeamento de inversores" });
+  if (!sbRes.ok) {
+    const text = await sbRes.text().catch(() => "");
+    return res.status(sbRes.status).json({ error: `INGECON API retornou ${sbRes.status}`, detail: text.slice(0, 500) });
   }
 
-  const invRecords = await invRes.json();
   const sbRecords = await sbRes.json();
-
-  const boardToSn = {};
-  invRecords.forEach(r => { if (r.SN && r.BoardId) boardToSn[r.BoardId] = r.SN; });
-
   const map = {};
   sbRecords.forEach(r => {
     if (!r.BoardId || !r.GId) return;
-    const sn = boardToSn[r.BoardId];
-    if (!sn) return;
     const pos = posFromGid(r.GId);
-    if (pos) map[sn] = pos;
+    if (pos) map[r.BoardId] = pos;
   });
 
   res.setHeader("Cache-Control", "public, s-maxage=86400, stale-while-revalidate=604800");

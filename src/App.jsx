@@ -1898,18 +1898,25 @@ function GenerationPanel() {
       (bySn[r.sn] ??= []).push(r);
     });
     return Object.entries(bySn)
-      .map(([sn,recs])=>({
-        invKey:sn, name:invName(sn,invMap),
-        gen: recs.reduce((s,r)=>s+(r.eInjection||0),0)/1000, // kWh → MWh
-      }))
+      .map(([sn,recs])=>{
+        const pos = invMap[sn]; // ex.: "3.4.1"
+        return {
+          invKey:sn, name:invName(sn,invMap),
+          gen: recs.reduce((s,r)=>s+(r.eInjection||0),0)/1000, // kWh → MWh
+          group: pos ? pos.slice(-1) : null, // "1" (17 combiners) ou "2" (16 combiners)
+        };
+      })
       .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}))
       .map((d,i)=>({...d, color:invColor(i)}));
   },[rows,period,selDate,dateIdx,dates,invMap]);
 
-  // Ranking único (a API não expõe grupo/nome amigável — sem separação "Final 1/2")
-  const groups = useMemo(()=>({
-    g1:[], g2:[], other:[...genData].sort((a,b)=>b.gen-a.gen),
-  }),[genData]);
+  // Agrupa por posição: termina em 1 → inversor com 17 combiners; termina em 2 → 16 combiners
+  const groups = useMemo(()=>{
+    const g1=genData.filter(d=>d.group==="1").sort((a,b)=>b.gen-a.gen);
+    const g2=genData.filter(d=>d.group==="2").sort((a,b)=>b.gen-a.gen);
+    const other=genData.filter(d=>d.group!=="1"&&d.group!=="2").sort((a,b)=>b.gen-a.gen);
+    return {g1,g2,other};
+  },[genData]);
 
   // Δ% entre maior e menor geração de um grupo
   const spreadPct = arr => {
@@ -2064,17 +2071,19 @@ function GenerationPanel() {
         <div style={{width:232,flexShrink:0,display:"flex",flexDirection:"column",gap:10,
           paddingLeft:12,borderLeft:"0.5px solid var(--color-border-tertiary)",overflowY:"auto"}}>
 
-          {[{key:"g1",arr:groups.g1},{key:"g2",arr:groups.g2}].map(({key,arr})=>{
+          {[{key:"g1",label:"17 combiners (·1)",arr:groups.g1},{key:"g2",label:"16 combiners (·2)",arr:groups.g2}].map(({key,label,arr})=>{
             if(!arr.length) return null;
             const gmax=arr[0]?.gen||0;
             const gavg=arr.reduce((s,x)=>s+x.gen,0)/arr.length;
             return(
               <div key={key} style={{flexShrink:0}}>
-                <div style={{display:"flex",justifyContent:"flex-end",marginBottom:4}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4,gap:6}}>
+                  <span style={{fontSize:11,fontWeight:600,color:"var(--color-text-tertiary)",
+                    textTransform:"uppercase",letterSpacing:"0.04em"}}>{label}</span>
                   <span title="Média de geração do grupo"
                     style={{fontSize:12,fontFamily:"var(--font-mono)",fontWeight:700,
                       color:"#A7B6C6",background:"var(--color-background-secondary)",
-                      padding:"2px 8px",borderRadius:5}}>
+                      padding:"2px 8px",borderRadius:5,flexShrink:0}}>
                     Média {fmtU(gavg,uDecR)} {unit}
                   </span>
                 </div>

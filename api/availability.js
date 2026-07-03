@@ -3,6 +3,7 @@ import { plantId, ingeconHeaders, todayInPlantTz, toISODate } from "./_lib/ingec
 
 // Proxy + cache (Supabase) para as leituras de Pac (15 min) por inversor de um dia,
 // usadas pelo painel de Disponibilidade. Fonte: /ingecon/samplesv2/plant/{id}/date/{date}.
+// Nota: a coluna "sn" da tabela guarda o BoardId (não o SN da API) — ver comentário abaixo.
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     res.setHeader("Allow", "GET");
@@ -60,13 +61,16 @@ export default async function handler(req, res) {
   }
   const records = await upstreamRes.json();
 
+  // Agrupa por BoardId, não por SN: pelo menos um SN (H10022560016) é reaproveitado por
+  // dois boards físicos diferentes (posições 4.4.1 e 4.1.1) — BoardId é o identificador
+  // realmente único por inversor (confirmado: 30 boards distintos = 30 posições).
   const bySn = {};
   records.forEach(r => {
-    if (!r.SN) return;
+    if (!r.BoardId) return;
     const time = String(r.DateTime || "").slice(11, 16);
     const pac = (typeof r.Pac === "number" && isFinite(r.Pac)) ? r.Pac / 1000 : null; // W -> kW
-    if (!bySn[r.SN]) bySn[r.SN] = [];
-    bySn[r.SN].push({ time, pac });
+    if (!bySn[r.BoardId]) bySn[r.BoardId] = [];
+    bySn[r.BoardId].push({ time, pac });
   });
   Object.values(bySn).forEach(arr => arr.sort((a, b) => a.time.localeCompare(b.time)));
 

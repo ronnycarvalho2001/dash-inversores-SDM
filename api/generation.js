@@ -74,19 +74,19 @@ export default async function handler(req, res) {
     }
     const records = await upstreamRes.json();
 
-    // Alguns inversores reportam por mais de um "board" (ex.: 2 registros pro mesmo SN+dia) —
-    // soma as duplicatas em vez de deixar o upsert falhar (ON CONFLICT não aceita a mesma
-    // chave duas vezes no mesmo lote).
+    // Agrupa por BoardId, não por SN: pelo menos um SN (H10022560016) é reaproveitado por
+    // dois boards físicos diferentes — BoardId é o identificador realmente único por inversor.
+    // A coluna "sn" da tabela guarda o BoardId.
     const bySnDate = new Map();
-    records.filter(r => r.SN && r.DateTime).forEach(r => {
-      const key = `${r.SN}|${String(r.DateTime).slice(0, 10)}`;
+    records.filter(r => r.BoardId && r.DateTime).forEach(r => {
+      const key = `${r.BoardId}|${String(r.DateTime).slice(0, 10)}`;
       const prev = bySnDate.get(key);
       if (prev) {
         prev.e_injection = (prev.e_injection ?? 0) + (r.EInjection ?? 0);
         prev.e_absorption = (prev.e_absorption ?? 0) + (r.EAbsorption ?? 0);
       } else {
         bySnDate.set(key, {
-          sn: r.SN,
+          sn: r.BoardId,
           date: String(r.DateTime).slice(0, 10),
           e_injection: r.EInjection ?? null,
           e_absorption: r.EAbsorption ?? null,
