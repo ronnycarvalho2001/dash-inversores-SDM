@@ -514,11 +514,20 @@ const MONTH_FULL = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho
 
 function invName(sn, map) { return (map&&map[sn]) || `SN ${String(sn).slice(-4)}`; }
 function invColor(idx) { return PALETTE[idx % PALETTE.length]; }
+// Cache em nível de módulo — sem isso, cada vez que o painel desmonta/remonta
+// (trocar de aba e voltar) o mapa reiniciava vazio e o nome "SN ####" (fallback)
+// piscava na tela até o fetch terminar de novo.
+let _inverterMapCache = null;
+let _inverterMapPromise = null;
 function useInverterMap() {
-  const [map, setMap] = useState({});
+  const [map, setMap] = useState(_inverterMapCache || {});
   useEffect(()=>{
+    if (_inverterMapCache) { setMap(_inverterMapCache); return; }
+    if (!_inverterMapPromise) {
+      _inverterMapPromise = fetch("/api/inverter-map").then(r=>r.ok?r.json():{}).catch(()=>({}));
+    }
     let cancelled=false;
-    fetch("/api/inverter-map").then(r=>r.ok?r.json():{}).then(m=>{ if(!cancelled) setMap(m); }).catch(()=>{});
+    _inverterMapPromise.then(m=>{ _inverterMapCache=m; if(!cancelled) setMap(m); });
     return ()=>{ cancelled=true; };
   },[]);
   return map;
@@ -711,14 +720,14 @@ function AvailabilityPanel() {
         <div style={{flex:1,display:"flex",gap:0,overflow:"hidden",minHeight:0}}>
 
           {/* ── Coluna 1: Barras de disponibilidade ── */}
-          <div style={{flex:"0 0 48%",display:"flex",flexDirection:"column",overflow:"hidden",paddingRight:12}}>
+          <div style={{flex:"0 0 33%",display:"flex",flexDirection:"column",overflow:"hidden",paddingRight:8}}>
             <div style={{fontSize:13,fontWeight:600,color:"var(--color-text-tertiary)",textTransform:"uppercase",
               letterSpacing:"0.05em",marginBottom:8,flexShrink:0}}>
               {viewMode==="daily"?"Disponibilidade Diária (12h previstas)":"Disponibilidade Mensal"}
             </div>
 
             {/* Cabeçalho das linhas de referência */}
-            <div style={{position:"relative",marginLeft:140,marginRight:56,height:14,flexShrink:0}}>
+            <div style={{position:"relative",marginLeft:66,marginRight:46,height:14,flexShrink:0}}>
               {[0,25,50,75,90,100].map(p=>(
                 <span key={p} style={{position:"absolute",left:`${p}%`,transform:"translateX(-50%)",
                   fontSize:13,color:"var(--color-text-tertiary)"}}>{p}%</span>
@@ -728,10 +737,10 @@ function AvailabilityPanel() {
             <div style={{overflowY:"auto",flex:1,paddingRight:4}}>
               {items.map((inv)=>(
                 <div key={inv.invKey||inv.id} style={{marginBottom:viewMode==="monthly"?4:8}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
                     {/* Label inversor */}
-                    <div style={{width:140,flexShrink:0,display:"flex",alignItems:"center",gap:5}}>
-                      <span style={{width:8,height:8,borderRadius:"50%",background:inv.color,flexShrink:0}}></span>
+                    <div style={{width:66,flexShrink:0,display:"flex",alignItems:"center",gap:4}}>
+                      <span style={{width:7,height:7,borderRadius:"50%",background:inv.color,flexShrink:0}}></span>
                       <span style={{fontSize:13,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",
                         whiteSpace:"nowrap",color:"var(--color-text-primary)"}}
                         title={inv.displayName||inv.name}>{inv.displayName||inv.name}</span>
@@ -761,7 +770,7 @@ function AvailabilityPanel() {
                       </div>
                     </div>
                     {/* Valor & parado */}
-                    <div style={{width:72,flexShrink:0,textAlign:"right"}}>
+                    <div style={{width:56,flexShrink:0,textAlign:"right"}}>
                       {inv.availability<18&&(
                         <div style={{fontSize:13,fontWeight:700,color:availColor(inv.availability),lineHeight:1.2}}>
                           {(inv.availability??0).toFixed(1)}%
@@ -779,7 +788,7 @@ function AvailabilityPanel() {
 
                   {/* Breakdown diário (mensal) */}
                   {viewMode==="monthly"&&inv.dayBreakdown&&(
-                    <div style={{marginLeft:148,marginTop:2,display:"flex",flexWrap:"wrap",gap:2}}>
+                    <div style={{marginLeft:72,marginTop:2,display:"flex",flexWrap:"wrap",gap:2}}>
                       {inv.dayBreakdown.map(db=>(
                         <span key={db.date} title={`${db.date}: ${(db.availability??0).toFixed(1)}% (${fmtMins(db.stoppedMins)} parado)`}
                           style={{fontSize:13,padding:"1px 5px",borderRadius:3,cursor:"default",
