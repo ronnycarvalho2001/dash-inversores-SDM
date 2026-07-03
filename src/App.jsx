@@ -533,7 +533,7 @@ function useInverterMap() {
   return map;
 }
 
-function AvailabilityPanel() {
+function AvailabilityPanel({ onLastUpdated }) {
   const invMap = useInverterMap();
   const dates = useMemo(()=>last30Dates(),[]);
   const today = dates[dates.length-1];
@@ -571,6 +571,7 @@ function AvailabilityPanel() {
           const data = await res.json();
           if (cancelled) return;
           setSampleCache(prev=>({...prev,[d]:data}));
+          if (d===today) onLastUpdated?.(new Date());
           const cacheStatus = res.headers.get("X-Cache");
           loaded++;
           setProgress({loaded, total:missing.length});
@@ -588,6 +589,20 @@ function AvailabilityPanel() {
     return ()=>{ cancelled=true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[targetDates]);
+
+  // A API renova os dados a cada 15 min — refaz a busca de "hoje" no mesmo ritmo pra manter atualizado.
+  useEffect(()=>{
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/availability?date=${today}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        setSampleCache(prev=>({...prev,[today]:data}));
+        onLastUpdated?.(new Date());
+      } catch { /* falha silenciosa, tenta de novo no próximo ciclo */ }
+    }, 15*60*1000);
+    return ()=>clearInterval(interval);
+  },[today, onLastUpdated]);
 
   // Início calculado por inversor individualmente (sem smart start global)
 
@@ -1074,7 +1089,10 @@ function App() {
   const [errors,       setErrors]       = useState([]);
   const [showStats,    setShowStats]    = useState(true);
   const [hidden,       setHidden]       = useState(new Set());
+  const [lastUpdated,  setLastUpdated]  = useState(null); // Date da última leitura da API (avail/gen/combiners)
   const fileRef = useRef();
+
+  useEffect(()=>{ setLastUpdated(null); },[activeTab]);
 
   const [sideW,  onSideDrag]   = useDivider(255,180,420,"horizontal");
   const [statsH, onStatsDrag]  = useDivider(190,80,440,"vertical");
@@ -1501,7 +1519,16 @@ function App() {
             ))}
 
             <div style={{marginLeft:"auto",fontSize:13,color:"var(--color-text-tertiary)",flexShrink:0,display:"flex",alignItems:"center",gap:10}}>
-              <span>{visible.length} visível(is)</span>
+              {showFileTab?(
+                <span>{visible.length} visível(is)</span>
+              ):lastUpdated&&(
+                <span style={{display:"flex",alignItems:"center",gap:4}}>
+                  <i className="ti ti-refresh" style={{fontSize:13}}/>
+                  Última leitura <strong style={{fontFamily:"var(--font-mono)",color:"var(--color-text-secondary)"}}>
+                    {lastUpdated.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
+                  </strong>
+                </span>
+              )}
               {selectedTime&&(
                 <span style={{color:"#2E9BFF",display:"inline-flex",alignItems:"center",gap:4}}>
                   <i className="ti ti-map-pin" style={{fontSize:13}}/><strong>{selectedTime}</strong>
@@ -1535,11 +1562,11 @@ function App() {
           background:"#131C28",borderRadius:14,border:"1px solid rgba(255,255,255,0.06)",
           boxShadow:"0 12px 32px -16px rgba(0,0,0,0.75)"}}>
           {activeTab==="combiners"?(
-            <CombinerPanel/>
+            <CombinerPanel onLastUpdated={setLastUpdated}/>
           ):activeTab==="avail"?(
-            <AvailabilityPanel/>
+            <AvailabilityPanel onLastUpdated={setLastUpdated}/>
           ):activeTab==="gen"?(
-            <GenerationPanel/>
+            <GenerationPanel onLastUpdated={setLastUpdated}/>
           ):!selectedDate||inverters.length===0?(
             <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
               color:"var(--color-text-tertiary)",gap:14,textAlign:"center"}}>
@@ -1843,7 +1870,7 @@ function ImbalanceTable({ imbalanceData, selectedTime, alertC, fmtPct }) {
 // ── Painel de Geração ─────────────────────────────────────────────────────────
 const GEN_PERIOD_LABELS = { daily:"Diário", weekly:"7 dias", monthly:"Mensal" };
 
-function GenerationPanel() {
+function GenerationPanel({ onLastUpdated }) {
   const invMap = useInverterMap();
   const dates = useMemo(()=>last30Dates(),[]);
   const today = dates[dates.length-1];
@@ -1875,7 +1902,7 @@ function GenerationPanel() {
           throw new Error(body.error || `Erro ${res.status}`);
         }
         const data = await res.json();
-        if (!cancelled) setRows(data);
+        if (!cancelled) { setRows(data); onLastUpdated?.(new Date()); }
       } catch(err) {
         if (!cancelled) setFatalError(err.message);
       } finally {
@@ -1883,7 +1910,21 @@ function GenerationPanel() {
       }
     })();
     return ()=>{ cancelled=true; };
-  },[dates]);
+  },[dates, onLastUpdated]);
+
+  // A API renova os dados a cada 15 min — refaz a busca no mesmo ritmo pra manter atualizado.
+  useEffect(()=>{
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/generation?from=${dates[0]}&to=${dates[dates.length-1]}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        setRows(data);
+        onLastUpdated?.(new Date());
+      } catch { /* falha silenciosa, tenta de novo no próximo ciclo */ }
+    }, 15*60*1000);
+    return ()=>clearInterval(interval);
+  },[dates, onLastUpdated]);
 
   const dateIdx = dates.indexOf(selDate);
   const goPrevDay = () => { if(dateIdx>0) setSelDate(dates[dateIdx-1]); };
@@ -2294,7 +2335,7 @@ function CombinerChart({ records, onPointClick }) {
   );
 }
 
-function CombinerPanel() {
+function CombinerPanel({ onLastUpdated }) {
   const dates = useMemo(()=>last30Dates(),[]);
   const today = dates[dates.length-1];
   const [dayData, setDayData]   = useState({});   // { [date]: { [GId]: {time,idc[]}[] } }
@@ -2325,6 +2366,7 @@ function CombinerPanel() {
           const parsed = await fetchStringboxDay(date, isToday);
           if (cancelled) return;
           setDayData(prev=>({...prev,[date]:parsed}));
+          if (isToday) onLastUpdated?.(new Date());
         } catch (err) {
           if (loaded===0) setFatalError(err.message);
         }
@@ -2337,7 +2379,19 @@ function CombinerPanel() {
     })();
 
     return ()=>{ cancelled = true; };
-  },[dates, today]);
+  },[dates, today, onLastUpdated]);
+
+  // A API renova os dados a cada 15 min — refaz a busca de "hoje" no mesmo ritmo pra manter atualizado.
+  useEffect(()=>{
+    const interval = setInterval(async () => {
+      try {
+        const parsed = await fetchStringboxDay(today, true);
+        setDayData(prev=>({...prev,[today]:parsed}));
+        onLastUpdated?.(new Date());
+      } catch { /* falha silenciosa, tenta de novo no próximo ciclo */ }
+    }, 15*60*1000);
+    return ()=>clearInterval(interval);
+  },[today, onLastUpdated]);
 
   useEffect(()=>{ if(Object.keys(dayData).length>0 && fatalError) setFatalError(null); },[dayData, fatalError]);
 
@@ -2487,7 +2541,6 @@ function CombinerPanel() {
         {summary&&(
           <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:14,fontSize:13,
             color:"var(--color-text-secondary)",flexWrap:"wrap"}}>
-            <span>Última leitura <strong style={{fontFamily:"var(--font-mono)"}}>{summary.time}</strong></span>
             <span style={{color:"#4CAF50"}}>▲ Combiner {summary.max.i+1} ({summary.max.v.toFixed(1)}A)</span>
             <span style={{color:"#F44336"}}>▼ Combiner {summary.min.i+1} ({summary.min.v.toFixed(1)}A)</span>
             {selectedTime&&(
@@ -2560,10 +2613,6 @@ function CombinerPanel() {
             const highlight = highlightFor(arr);
             return(
             <div key={title} style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
-              <div style={{fontSize:13,fontWeight:600,color:"var(--color-text-tertiary)",textTransform:"uppercase",
-                letterSpacing:"0.05em",marginBottom:6,flexShrink:0}}>
-                Combinadores de {title} — {analysisScope==="day"?"médias do dia":`às ${selectedTime}`}
-              </div>
               {highlight&&(
                 <div style={{flexShrink:0,marginBottom:6,padding:"6px 8px",borderRadius:6,
                   background:"rgba(244,67,54,0.08)",border:"1px solid rgba(244,67,54,0.28)"}}>
