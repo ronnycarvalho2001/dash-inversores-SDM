@@ -512,10 +512,20 @@ function ImbalanceChart({ inverters, onPointClick }) {
 // ── Painel de Disponibilidade ─────────────────────────────────────────────────
 const MONTH_FULL = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
 
-function invName(sn) { return `INV ${String(sn).slice(-3)}`; }
+function invName(sn, map) { return (map&&map[sn]) || `SN ${String(sn).slice(-4)}`; }
 function invColor(idx) { return PALETTE[idx % PALETTE.length]; }
+function useInverterMap() {
+  const [map, setMap] = useState({});
+  useEffect(()=>{
+    let cancelled=false;
+    fetch("/api/inverter-map").then(r=>r.ok?r.json():{}).then(m=>{ if(!cancelled) setMap(m); }).catch(()=>{});
+    return ()=>{ cancelled=true; };
+  },[]);
+  return map;
+}
 
 function AvailabilityPanel() {
+  const invMap = useInverterMap();
   const dates = useMemo(()=>last30Dates(),[]);
   const today = dates[dates.length-1];
   const [viewMode, setViewMode] = useState("daily");
@@ -577,10 +587,10 @@ function AvailabilityPanel() {
     const samples = sampleCache[selDate];
     if (!samples) return [];
     return Object.entries(samples)
-      .map(([sn,data])=>({ sn, name:invName(sn), ...calcDayAvail(data, detectInverterStart(data)) }))
+      .map(([sn,data])=>({ sn, name:invName(sn,invMap), ...calcDayAvail(data, detectInverterStart(data)) }))
       .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}))
       .map((inv,i)=>({...inv, color:invColor(i)}));
-  },[sampleCache, selDate]);
+  },[sampleCache, selDate, invMap]);
 
   // Disponibilidade mensal
   const monthlyAvail = useMemo(()=>{
@@ -599,12 +609,13 @@ function AvailabilityPanel() {
         const totalStoppedH = dayBreakdown.reduce((s,x)=>s+x.stoppedHours,0);
         const predicted = dayBreakdown.length*12;
         const avail = predicted>0 ? Math.max(0,Math.min(100,(predicted-totalStoppedH)/predicted*100)) : 0;
-        return { sn, name:invName(sn), invKey:sn, displayName:invName(sn),
+        const nm = invName(sn,invMap);
+        return { sn, name:nm, invKey:sn, displayName:nm,
           availability:avail, stoppedHours:totalStoppedH, days:dayBreakdown.length, dayBreakdown };
       })
       .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}))
       .map((inv,i)=>({...inv, color:invColor(i)}));
-  },[sampleCache, selMonth, dates]);
+  },[sampleCache, selMonth, dates, invMap]);
 
   const items = viewMode==="daily" ? dailyAvail : monthlyAvail;
   const dateIdx = dates.indexOf(selDate);
@@ -716,7 +727,7 @@ function AvailabilityPanel() {
 
             <div style={{overflowY:"auto",flex:1,paddingRight:4}}>
               {items.map((inv)=>(
-                <div key={inv.invKey||inv.id} style={{marginBottom:viewMode==="monthly"?14:10}}>
+                <div key={inv.invKey||inv.id} style={{marginBottom:viewMode==="monthly"?4:8}}>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
                     {/* Label inversor */}
                     <div style={{width:140,flexShrink:0,display:"flex",alignItems:"center",gap:5}}>
@@ -726,7 +737,7 @@ function AvailabilityPanel() {
                         title={inv.displayName||inv.name}>{inv.displayName||inv.name}</span>
                     </div>
                     {/* Barra */}
-                    <div style={{flex:1,position:"relative",height:24,background:"var(--color-background-secondary)",
+                    <div style={{flex:1,position:"relative",height:viewMode==="monthly"?16:24,background:"var(--color-background-secondary)",
                       borderRadius:5,overflow:"hidden"}}>
                       {[25,50,75].map(p=>(
                         <div key={p} style={{position:"absolute",left:`${p}%`,top:0,bottom:0,
@@ -768,7 +779,7 @@ function AvailabilityPanel() {
 
                   {/* Breakdown diário (mensal) */}
                   {viewMode==="monthly"&&inv.dayBreakdown&&(
-                    <div style={{marginLeft:148,marginTop:4,display:"flex",flexWrap:"wrap",gap:3}}>
+                    <div style={{marginLeft:148,marginTop:2,display:"flex",flexWrap:"wrap",gap:2}}>
                       {inv.dayBreakdown.map(db=>(
                         <span key={db.date} title={`${db.date}: ${(db.availability??0).toFixed(1)}% (${fmtMins(db.stoppedMins)} parado)`}
                           style={{fontSize:13,padding:"1px 5px",borderRadius:3,cursor:"default",
@@ -855,7 +866,7 @@ function AvailabilityPanel() {
                     <thead style={{position:"sticky",top:0,zIndex:1,background:"var(--color-background-primary)"}}>
                       <tr>
                         {["Inversor","Dias","Total parado","Disp. Mensal"].map(h=>(
-                          <th key={h} style={{padding:"5px 8px",textAlign:h==="Inversor"?"left":"right",
+                          <th key={h} style={{padding:"3px 8px",textAlign:h==="Inversor"?"left":"right",
                             fontWeight:600,fontSize:13,color:"var(--color-text-secondary)",
                             borderBottom:"0.5px solid var(--color-border-tertiary)"}}>{h}</th>
                         ))}
@@ -864,18 +875,18 @@ function AvailabilityPanel() {
                     <tbody>
                       {monthlyAvail.map((inv,i)=>(
                         <tr key={inv.invKey} style={{background:i%2===1?"var(--color-background-secondary)":"transparent"}}>
-                          <td style={{padding:"5px 8px"}}>
+                          <td style={{padding:"2px 8px"}}>
                             <div style={{display:"flex",alignItems:"center",gap:5}}>
                               <span style={{width:7,height:7,borderRadius:"50%",background:inv.color,flexShrink:0}}></span>
                               <span style={{fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:120}}
                                 title={inv.displayName}>{inv.displayName}</span>
                             </div>
                           </td>
-                          <td style={{padding:"5px 8px",textAlign:"right",fontSize:13,color:"var(--color-text-tertiary)"}}>{inv.days}</td>
-                          <td style={{padding:"5px 8px",textAlign:"right",fontSize:13,fontFamily:"var(--font-mono)",color:"var(--color-text-secondary)"}}>
+                          <td style={{padding:"2px 8px",textAlign:"right",fontSize:13,color:"var(--color-text-tertiary)"}}>{inv.days}</td>
+                          <td style={{padding:"2px 8px",textAlign:"right",fontSize:13,fontFamily:"var(--font-mono)",color:"var(--color-text-secondary)"}}>
                             {fmtMins(Math.round(inv.stoppedHours*60))}
                           </td>
-                          <td style={{padding:"5px 8px",textAlign:"right",fontSize:13,fontWeight:700,
+                          <td style={{padding:"2px 8px",textAlign:"right",fontSize:13,fontWeight:700,
                             color:availColor(inv.availability),fontFamily:"var(--font-mono)"}}>
                             {(inv.availability??0).toFixed(1)}%
                           </td>
@@ -1824,6 +1835,7 @@ function ImbalanceTable({ imbalanceData, selectedTime, alertC, fmtPct }) {
 const GEN_PERIOD_LABELS = { daily:"Diário", weekly:"7 dias", monthly:"Mensal" };
 
 function GenerationPanel() {
+  const invMap = useInverterMap();
   const dates = useMemo(()=>last30Dates(),[]);
   const today = dates[dates.length-1];
   const [period, setPeriod] = useState("daily");
@@ -1887,12 +1899,12 @@ function GenerationPanel() {
     });
     return Object.entries(bySn)
       .map(([sn,recs])=>({
-        invKey:sn, name:invName(sn),
+        invKey:sn, name:invName(sn,invMap),
         gen: recs.reduce((s,r)=>s+(r.eInjection||0),0)/1000, // kWh → MWh
       }))
       .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}))
       .map((d,i)=>({...d, color:invColor(i)}));
-  },[rows,period,selDate,dateIdx,dates]);
+  },[rows,period,selDate,dateIdx,dates,invMap]);
 
   // Ranking único (a API não expõe grupo/nome amigável — sem separação "Final 1/2")
   const groups = useMemo(()=>({
