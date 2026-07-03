@@ -45,6 +45,10 @@ export default async function handler(req, res) {
     let sbRes;
     try {
       sbRes = await fetch(url, { headers });
+      if (sbRes.status === 429) { // rate limit transitório — espera e tenta esse dia mais uma vez
+        await new Promise(r => setTimeout(r, 4000));
+        sbRes = await fetch(url, { headers });
+      }
     } catch {
       continue;
     }

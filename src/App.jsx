@@ -516,10 +516,12 @@ function invName(sn, map) { return (map&&map[sn]) || `SN ${String(sn).slice(-4)}
 function invColor(idx) { return PALETTE[idx % PALETTE.length]; }
 // Cache em nível de módulo — sem isso, cada vez que o painel desmonta/remonta
 // (trocar de aba e voltar) o mapa reiniciava vazio e o nome "SN ####" (fallback)
-// piscava na tela até o fetch terminar de novo.
+// piscava na tela até o fetch terminar de novo. `resetInverterMapCache` é chamado
+// pelo botão "Atualizar" pra descartar um mapa que ficou incompleto por alguma falha.
 let _inverterMapCache = null;
 let _inverterMapPromise = null;
-function useInverterMap() {
+function resetInverterMapCache() { _inverterMapCache = null; _inverterMapPromise = null; }
+function useInverterMap(refreshTick) {
   const [map, setMap] = useState(_inverterMapCache || {});
   useEffect(()=>{
     if (_inverterMapCache) { setMap(_inverterMapCache); return; }
@@ -529,12 +531,13 @@ function useInverterMap() {
     let cancelled=false;
     _inverterMapPromise.then(m=>{ _inverterMapCache=m; if(!cancelled) setMap(m); });
     return ()=>{ cancelled=true; };
-  },[]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[refreshTick]);
   return map;
 }
 
-function AvailabilityPanel({ onLastUpdated }) {
-  const invMap = useInverterMap();
+function AvailabilityPanel({ onLastUpdated, refreshTick }) {
+  const invMap = useInverterMap(refreshTick);
   const dates = useMemo(()=>last30Dates(),[]);
   const today = dates[dates.length-1];
   const [viewMode, setViewMode] = useState("daily");
@@ -590,19 +593,22 @@ function AvailabilityPanel({ onLastUpdated }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[targetDates]);
 
-  // A API renova os dados a cada 15 min — refaz a busca de "hoje" no mesmo ritmo pra manter atualizado.
+  // Botão "Atualizar" (refreshTick) força revalidar "hoje" — nunca acontece sozinho,
+  // pra não trocar dados debaixo de uma análise em andamento sem o usuário pedir.
+  const lastAvailTickRef = useRef(refreshTick);
   useEffect(()=>{
-    const interval = setInterval(async () => {
+    if (refreshTick===lastAvailTickRef.current) return;
+    lastAvailTickRef.current = refreshTick;
+    (async()=>{
       try {
         const res = await fetch(`/api/availability?date=${today}`);
         if (!res.ok) return;
         const data = await res.json();
         setSampleCache(prev=>({...prev,[today]:data}));
         onLastUpdated?.(new Date());
-      } catch { /* falha silenciosa, tenta de novo no próximo ciclo */ }
-    }, 15*60*1000);
-    return ()=>clearInterval(interval);
-  },[today, onLastUpdated]);
+      } catch { /* falha silenciosa — usuário pode tentar de novo */ }
+    })();
+  },[refreshTick, today, onLastUpdated]);
 
   // Início calculado por inversor individualmente (sem smart start global)
 
@@ -1090,9 +1096,18 @@ function App() {
   const [showStats,    setShowStats]    = useState(true);
   const [hidden,       setHidden]       = useState(new Set());
   const [lastUpdated,  setLastUpdated]  = useState(null); // Date da última leitura da API (avail/gen/combiners)
+  const [refreshTick,  setRefreshTick]  = useState(0); // incrementa só quando o usuário clica "Atualizar"
+  const [refreshing,   setRefreshing]   = useState(false);
   const fileRef = useRef();
 
   useEffect(()=>{ setLastUpdated(null); },[activeTab]);
+
+  const handleRefresh = () => {
+    resetInverterMapCache();
+    setRefreshTick(t=>t+1);
+    setRefreshing(true);
+    setTimeout(()=>setRefreshing(false), 1500); // só pro ícone girar um instante, feedback visual
+  };
 
   const [sideW,  onSideDrag]   = useDivider(255,180,420,"horizontal");
   const [statsH, onStatsDrag]  = useDivider(190,80,440,"vertical");
@@ -1290,6 +1305,7 @@ function App() {
         ::-webkit-scrollbar-thumb:hover{background-color:rgba(148,163,184,.60);background-clip:content-box;}
         *{scrollbar-width:thin;scrollbar-color:transparent transparent;}
         *:hover{scrollbar-color:rgba(148,163,184,.32) transparent;}
+        @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
       `}}/>
 
       {/* ── Header ── */}
@@ -1521,14 +1537,22 @@ function App() {
             <div style={{marginLeft:"auto",fontSize:13,color:"var(--color-text-tertiary)",flexShrink:0,display:"flex",alignItems:"center",gap:10}}>
               {showFileTab?(
                 <span>{visible.length} visível(is)</span>
-              ):lastUpdated&&(
-                <span style={{display:"flex",alignItems:"center",gap:4}}>
-                  <i className="ti ti-refresh" style={{fontSize:13}}/>
-                  Última leitura <strong style={{fontFamily:"var(--font-mono)",color:"var(--color-text-secondary)"}}>
-                    {lastUpdated.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
-                  </strong>
-                </span>
-              )}
+              ):(<>
+                {lastUpdated&&(
+                  <span>
+                    Última leitura <strong style={{fontFamily:"var(--font-mono)",color:"var(--color-text-secondary)"}}>
+                      {lastUpdated.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})}
+                    </strong>
+                  </span>
+                )}
+                <button onClick={handleRefresh} title="Buscar dados mais recentes da API"
+                  style={{display:"flex",alignItems:"center",justifyContent:"center",padding:5,cursor:"pointer",
+                    borderRadius:6,border:"0.5px solid var(--color-border-secondary)",
+                    background:"var(--color-background-secondary)",color:"var(--color-text-secondary)"}}>
+                  <i className="ti ti-refresh" style={{fontSize:14,
+                    animation:refreshing?"spin 0.7s linear infinite":"none"}}/>
+                </button>
+              </>)}
               {selectedTime&&(
                 <span style={{color:"#2E9BFF",display:"inline-flex",alignItems:"center",gap:4}}>
                   <i className="ti ti-map-pin" style={{fontSize:13}}/><strong>{selectedTime}</strong>
@@ -1562,11 +1586,11 @@ function App() {
           background:"#131C28",borderRadius:14,border:"1px solid rgba(255,255,255,0.06)",
           boxShadow:"0 12px 32px -16px rgba(0,0,0,0.75)"}}>
           {activeTab==="combiners"?(
-            <CombinerPanel onLastUpdated={setLastUpdated}/>
+            <CombinerPanel onLastUpdated={setLastUpdated} refreshTick={refreshTick}/>
           ):activeTab==="avail"?(
-            <AvailabilityPanel onLastUpdated={setLastUpdated}/>
+            <AvailabilityPanel onLastUpdated={setLastUpdated} refreshTick={refreshTick}/>
           ):activeTab==="gen"?(
-            <GenerationPanel onLastUpdated={setLastUpdated}/>
+            <GenerationPanel onLastUpdated={setLastUpdated} refreshTick={refreshTick}/>
           ):!selectedDate||inverters.length===0?(
             <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
               color:"var(--color-text-tertiary)",gap:14,textAlign:"center"}}>
@@ -1870,8 +1894,8 @@ function ImbalanceTable({ imbalanceData, selectedTime, alertC, fmtPct }) {
 // ── Painel de Geração ─────────────────────────────────────────────────────────
 const GEN_PERIOD_LABELS = { daily:"Diário", weekly:"7 dias", monthly:"Mensal" };
 
-function GenerationPanel({ onLastUpdated }) {
-  const invMap = useInverterMap();
+function GenerationPanel({ onLastUpdated, refreshTick }) {
+  const invMap = useInverterMap(refreshTick);
   const dates = useMemo(()=>last30Dates(),[]);
   const today = dates[dates.length-1];
   const [period, setPeriod] = useState("daily");
@@ -1912,19 +1936,22 @@ function GenerationPanel({ onLastUpdated }) {
     return ()=>{ cancelled=true; };
   },[dates, onLastUpdated]);
 
-  // A API renova os dados a cada 15 min — refaz a busca no mesmo ritmo pra manter atualizado.
+  // Botão "Atualizar" (refreshTick) força revalidar — nunca acontece sozinho, pra não
+  // trocar dados debaixo de uma análise em andamento sem o usuário pedir.
+  const lastGenTickRef = useRef(refreshTick);
   useEffect(()=>{
-    const interval = setInterval(async () => {
+    if (refreshTick===lastGenTickRef.current) return;
+    lastGenTickRef.current = refreshTick;
+    (async()=>{
       try {
         const res = await fetch(`/api/generation?from=${dates[0]}&to=${dates[dates.length-1]}`);
         if (!res.ok) return;
         const data = await res.json();
         setRows(data);
         onLastUpdated?.(new Date());
-      } catch { /* falha silenciosa, tenta de novo no próximo ciclo */ }
-    }, 15*60*1000);
-    return ()=>clearInterval(interval);
-  },[dates, onLastUpdated]);
+      } catch { /* falha silenciosa — usuário pode tentar de novo */ }
+    })();
+  },[refreshTick, dates, onLastUpdated]);
 
   const dateIdx = dates.indexOf(selDate);
   const goPrevDay = () => { if(dateIdx>0) setSelDate(dates[dateIdx-1]); };
@@ -2335,7 +2362,7 @@ function CombinerChart({ records, onPointClick }) {
   );
 }
 
-function CombinerPanel({ onLastUpdated }) {
+function CombinerPanel({ onLastUpdated, refreshTick }) {
   const dates = useMemo(()=>last30Dates(),[]);
   const today = dates[dates.length-1];
   const [dayData, setDayData]   = useState({});   // { [date]: { [GId]: {time,idc[]}[] } }
@@ -2379,19 +2406,9 @@ function CombinerPanel({ onLastUpdated }) {
     })();
 
     return ()=>{ cancelled = true; };
-  },[dates, today, onLastUpdated]);
-
-  // A API renova os dados a cada 15 min — refaz a busca de "hoje" no mesmo ritmo pra manter atualizado.
-  useEffect(()=>{
-    const interval = setInterval(async () => {
-      try {
-        const parsed = await fetchStringboxDay(today, true);
-        setDayData(prev=>({...prev,[today]:parsed}));
-        onLastUpdated?.(new Date());
-      } catch { /* falha silenciosa, tenta de novo no próximo ciclo */ }
-    }, 15*60*1000);
-    return ()=>clearInterval(interval);
-  },[today, onLastUpdated]);
+    // refreshTick força reexecução (botão "Atualizar") — dias já em cache não geram requisição nova,
+    // só "hoje" de fato revalida, então é barato repetir o laço inteiro.
+  },[dates, today, onLastUpdated, refreshTick]);
 
   useEffect(()=>{ if(Object.keys(dayData).length>0 && fatalError) setFatalError(null); },[dayData, fatalError]);
 
@@ -2581,19 +2598,19 @@ function CombinerPanel({ onLastUpdated }) {
         <div style={{display:"flex",gap:2,background:"var(--color-background-secondary)",padding:3,borderRadius:8,flexShrink:0}}>
           {[{id:"point",label:"Ponto clicado"},{id:"day",label:"Dia inteiro"}].map(v=>(
             <button key={v.id} onClick={()=>setAnalysisScope(v.id)}
+              title={v.id==="point"&&analysisScope==="point"&&!selectedTime?"Clique num ponto do gráfico para comparar todos os combinadores nesse horário":undefined}
               style={{padding:"4px 11px",fontSize:13,cursor:"pointer",borderRadius:6,border:"none",
+                display:"flex",alignItems:"center",gap:4,
                 background:analysisScope===v.id?"#2E9BFF":"transparent",
                 color:analysisScope===v.id?"#fff":"var(--color-text-secondary)",
                 fontWeight:analysisScope===v.id?600:400,transition:"all 0.15s"}}>
               {v.label}
+              {v.id==="point"&&analysisScope==="point"&&!selectedTime&&(
+                <i className="ti ti-hand-click" style={{fontSize:13}}/>
+              )}
             </button>
           ))}
         </div>
-        {analysisScope==="point"&&!selectedTime&&(
-          <span style={{fontSize:13,color:"var(--color-text-tertiary)"}}>
-            <i className="ti ti-hand-click" style={{marginRight:5}}/>Clique num ponto do gráfico para comparar todos os combinadores nesse horário
-          </span>
-        )}
         {rankingAnalysis&&(analysisScope==="day"||selectedTime)&&(
           <button onClick={()=>setSortDir(d=>d==="asc"?"desc":"asc")}
             title={sortDir==="asc"?"Ordenando: menor → maior (clique p/ inverter)":"Ordenando: maior → menor (clique p/ inverter)"}
