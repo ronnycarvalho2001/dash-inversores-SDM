@@ -2068,23 +2068,21 @@ function GenerationPanel() {
         </div>
 
         {/* ── Rankings por terminação (Final 1 / Final 2) ── */}
-        <div style={{width:232,flexShrink:0,display:"flex",flexDirection:"column",gap:10,
-          paddingLeft:12,borderLeft:"0.5px solid var(--color-border-tertiary)",overflowY:"auto"}}>
+        <div style={{width:190,flexShrink:0,display:"flex",flexDirection:"column",gap:6,
+          paddingLeft:10,borderLeft:"0.5px solid var(--color-border-tertiary)",overflowY:"auto"}}>
 
-          {[{key:"g1",label:"17 combiners (·1)",arr:groups.g1},{key:"g2",label:"16 combiners (·2)",arr:groups.g2}].map(({key,label,arr})=>{
+          {[{key:"g1",arr:groups.g1},{key:"g2",arr:groups.g2}].map(({key,arr})=>{
             if(!arr.length) return null;
             const gmax=arr[0]?.gen||0;
             const gavg=arr.reduce((s,x)=>s+x.gen,0)/arr.length;
             return(
               <div key={key} style={{flexShrink:0}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4,gap:6}}>
-                  <span style={{fontSize:11,fontWeight:600,color:"var(--color-text-tertiary)",
-                    textTransform:"uppercase",letterSpacing:"0.04em"}}>{label}</span>
+                <div style={{display:"flex",justifyContent:"flex-end",marginBottom:3}}>
                   <span title="Média de geração do grupo"
-                    style={{fontSize:12,fontFamily:"var(--font-mono)",fontWeight:700,
+                    style={{fontSize:11,fontFamily:"var(--font-mono)",fontWeight:700,
                       color:"#A7B6C6",background:"var(--color-background-secondary)",
-                      padding:"2px 8px",borderRadius:5,flexShrink:0}}>
-                    Média {fmtU(gavg,uDecR)} {unit}
+                      padding:"1px 6px",borderRadius:5,flexShrink:0}}>
+                    {fmtU(gavg,uDecR)} {unit}
                   </span>
                 </div>
                 {arr.map((d,i)=>{
@@ -2092,25 +2090,21 @@ function GenerationPanel() {
                   const dp=gavg>0?(d.gen-gavg)/gavg*100:0;
                   const dpColor=dp>=0?"#4CAF50":"#F44336";
                   return(
-                    <div key={d.invKey} style={{position:"relative",display:"flex",alignItems:"center",gap:6,
-                      padding:"3px 7px",marginBottom:2,borderRadius:5,overflow:"hidden",
+                    <div key={d.invKey} style={{position:"relative",display:"flex",alignItems:"center",gap:4,
+                      padding:"2px 6px",marginBottom:1,borderRadius:5,overflow:"hidden",
                       background:"var(--color-background-secondary)"}}>
                       <div style={{position:"absolute",left:0,top:0,bottom:0,width:`${pct}%`,
                         background:d.color,opacity:0.18}}></div>
                       <span style={{position:"relative",fontSize:11,color:"var(--color-text-tertiary)",fontWeight:700,
-                        minWidth:15,textAlign:"center"}}>#{i+1}</span>
-                      <span style={{position:"relative",width:8,height:8,borderRadius:"50%",background:d.color,flexShrink:0}}></span>
-                      <span style={{position:"relative",fontSize:12,fontWeight:600,flex:1,overflow:"hidden",
+                        minWidth:12,textAlign:"center"}}>#{i+1}</span>
+                      <span style={{position:"relative",width:7,height:7,borderRadius:"50%",background:d.color,flexShrink:0}}></span>
+                      <span style={{position:"relative",fontSize:11,fontWeight:600,flex:1,overflow:"hidden",
                         textOverflow:"ellipsis",whiteSpace:"nowrap",color:"var(--color-text-primary)"}}
                         title={d.name}>{d.name}</span>
-                      <span style={{position:"relative",fontSize:12,fontFamily:"var(--font-mono)",fontWeight:700,
-                        color:"#2E9BFF",flexShrink:0,whiteSpace:"nowrap"}}>
-                        {fmtU(d.gen??0,uDecR)}<span style={{fontSize:10,color:"var(--color-text-tertiary)",marginLeft:2}}>{unit}</span>
-                      </span>
-                      <span title="Diferença em relação à média do grupo"
-                        style={{position:"relative",fontSize:11,fontFamily:"var(--font-mono)",fontWeight:700,
-                          color:dpColor,minWidth:54,textAlign:"right",flexShrink:0}}>
-                        {dp>=0?"+":""}{dp.toFixed(2)}%
+                      <span style={{position:"relative",fontSize:11,fontFamily:"var(--font-mono)",fontWeight:700,
+                          color:dpColor,minWidth:42,textAlign:"right",flexShrink:0}}
+                        title={`${fmtU(d.gen??0,uDecR)} ${unit}`}>
+                        {dp>=0?"+":""}{dp.toFixed(1)}%
                       </span>
                     </div>
                   );
@@ -2125,18 +2119,18 @@ function GenerationPanel() {
                 const gmax=groups.other[0]?.gen||0;
                 const pct=gmax>0?d.gen/gmax*100:0;
                 return(
-                  <div key={d.invKey} style={{position:"relative",display:"flex",alignItems:"center",gap:6,
-                    padding:"3px 7px",marginBottom:2,borderRadius:5,overflow:"hidden",
+                  <div key={d.invKey} style={{position:"relative",display:"flex",alignItems:"center",gap:4,
+                    padding:"2px 6px",marginBottom:1,borderRadius:5,overflow:"hidden",
                     background:"var(--color-background-secondary)"}}>
                     <div style={{position:"absolute",left:0,top:0,bottom:0,width:`${pct}%`,
                       background:d.color,opacity:0.18}}></div>
                     <span style={{position:"relative",fontSize:11,color:"var(--color-text-tertiary)",fontWeight:700,
-                      minWidth:15,textAlign:"center"}}>#{i+1}</span>
-                    <span style={{position:"relative",width:8,height:8,borderRadius:"50%",background:d.color,flexShrink:0}}></span>
-                    <span style={{position:"relative",fontSize:12,fontWeight:600,flex:1,overflow:"hidden",
+                      minWidth:12,textAlign:"center"}}>#{i+1}</span>
+                    <span style={{position:"relative",width:7,height:7,borderRadius:"50%",background:d.color,flexShrink:0}}></span>
+                    <span style={{position:"relative",fontSize:11,fontWeight:600,flex:1,overflow:"hidden",
                       textOverflow:"ellipsis",whiteSpace:"nowrap",color:"var(--color-text-primary)"}}
                       title={d.name}>{d.name}</span>
-                    <span style={{position:"relative",fontSize:12,fontFamily:"var(--font-mono)",fontWeight:700,
+                    <span style={{position:"relative",fontSize:11,fontFamily:"var(--font-mono)",fontWeight:700,
                       color:"#2E9BFF",flexShrink:0,whiteSpace:"nowrap"}}>{fmtU(d.gen??0,uDecR)}
                       <span style={{fontSize:10,color:"var(--color-text-tertiary)",marginLeft:2}}>{unit}</span></span>
                   </div>
