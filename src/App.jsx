@@ -720,7 +720,7 @@ function AvailabilityPanel() {
         <div style={{flex:1,display:"flex",gap:0,overflow:"hidden",minHeight:0}}>
 
           {/* ── Coluna 1: Barras de disponibilidade ── */}
-          <div style={{flex:"0 0 33%",display:"flex",flexDirection:"column",overflow:"hidden",paddingRight:8}}>
+          <div style={{flex:"0 0 64%",display:"flex",flexDirection:"column",overflow:"hidden",paddingRight:8}}>
             <div style={{fontSize:13,fontWeight:600,color:"var(--color-text-tertiary)",textTransform:"uppercase",
               letterSpacing:"0.05em",marginBottom:8,flexShrink:0}}>
               {viewMode==="daily"?"Disponibilidade Diária (12h previstas)":"Disponibilidade Mensal"}
@@ -816,12 +816,12 @@ function AvailabilityPanel() {
                   letterSpacing:"0.05em",marginBottom:8,flexShrink:0}}>
                   Intervalos sem geração (05:30 – 17:30)
                 </div>
-                <div style={{overflowY:"auto",flex:1,display:"flex",flexDirection:"column",gap:8}}>
+                <div style={{overflowY:"auto",flex:1,display:"flex",flexDirection:"column",gap:4}}>
                   {dailyAvail.map(inv=>(
                     <div key={inv.id||inv.invKey}
-                      style={{background:"var(--color-background-secondary)",borderRadius:8,
-                        padding:"8px 10px",borderLeft:`3px solid ${availColor(inv.availability)}`}}>
-                      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:inv.intervals.length?5:0}}>
+                      style={{background:"var(--color-background-secondary)",borderRadius:6,
+                        padding:"5px 8px",borderLeft:`3px solid ${availColor(inv.availability)}`}}>
+                      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:inv.intervals.length?3:0}}>
                         <span style={{width:7,height:7,borderRadius:"50%",background:inv.color,flexShrink:0}}></span>
                         <span style={{fontSize:13,fontWeight:600,color:"var(--color-text-primary)",
                           overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}
