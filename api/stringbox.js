@@ -1,13 +1,4 @@
-const PLANT_ID_DEFAULT = "ad493847-3dd7-4526-9122-123e35d1374a";
-const PLANT_TZ = "America/Fortaleza";
-
-function todayInPlantTz() {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: PLANT_TZ, year: "numeric", month: "2-digit", day: "2-digit",
-  }).formatToParts(new Date());
-  const map = Object.fromEntries(parts.map(p => [p.type, p.value]));
-  return `${map.year}${map.month}${map.day}`;
-}
+import { plantId, ingeconHeaders, todayInPlantTz } from "./_lib/ingecon.js";
 
 // Proxy para GET /stringbox/samplesv2/plant/{plantId}/date/{date} do INGECON SUN Monitor.
 // A API key fica só aqui no servidor — nunca é exposta ao browser.
@@ -22,19 +13,18 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Parâmetro 'date' inválido — use o formato YYYYMMDD" });
   }
 
-  const apiKey = process.env.INGECON_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: "INGECON_API_KEY não configurada no servidor" });
+  let headers;
+  try {
+    headers = ingeconHeaders();
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
-  const plantId = process.env.INGECON_PLANT_ID || PLANT_ID_DEFAULT;
 
-  const upstreamUrl = `https://www.ingeconsunmonitor.com/api/stringbox/samplesv2/plant/${plantId}/date/${date}`;
+  const upstreamUrl = `https://www.ingeconsunmonitor.com/api/stringbox/samplesv2/plant/${plantId()}/date/${date}`;
 
   let upstreamRes;
   try {
-    upstreamRes = await fetch(upstreamUrl, {
-      headers: { "X-API-KEY": apiKey, "Accept-Encoding": "gzip" },
-    });
+    upstreamRes = await fetch(upstreamUrl, { headers });
   } catch {
     return res.status(502).json({ error: "Falha ao contatar a API do INGECON SUN Monitor" });
   }

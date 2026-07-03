@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.110.0",
     "@tabler/icons-webfont": "^3.44.0",
     "papaparse": "^5.5.3",
     "react": "^19.2.6",

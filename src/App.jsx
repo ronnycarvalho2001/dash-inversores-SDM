@@ -512,54 +512,105 @@ function ImbalanceChart({ inverters, onPointClick }) {
 // ── Painel de Disponibilidade ─────────────────────────────────────────────────
 const MONTH_FULL = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
 
-function AvailabilityPanel({ inverters, allData, selectedDate }) {
+function invName(sn) { return `INV ${String(sn).slice(-3)}`; }
+function invColor(idx) { return PALETTE[idx % PALETTE.length]; }
+
+function AvailabilityPanel() {
+  const dates = useMemo(()=>last30Dates(),[]);
+  const today = dates[dates.length-1];
   const [viewMode, setViewMode] = useState("daily");
-  const [selMonth, setSelMonth] = useState(() => selectedDate?.slice(0,7) ?? null);
-  useEffect(()=>{ if(selectedDate) setSelMonth(selectedDate.slice(0,7)); },[selectedDate]);
+  const [selDate, setSelDate] = useState(today);
+  const [selMonth, setSelMonth] = useState(today.slice(0,6));
+  const [sampleCache, setSampleCache] = useState({}); // { [ymd]: {[sn]: {time,pac}[]} }
+  const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState({loaded:0,total:0});
+  const [fatalError, setFatalError] = useState(null);
+
+  const months = useMemo(()=>[...new Set(dates.map(d=>d.slice(0,6)))].sort(),[dates]);
+  const monthIdx = months.indexOf(selMonth);
+
+  const targetDates = useMemo(()=>
+    viewMode==="daily" ? [selDate] : dates.filter(d=>d.startsWith(selMonth))
+  ,[viewMode, selDate, selMonth, dates]);
+
+  useEffect(()=>{
+    let cancelled = false;
+    const missing = targetDates.filter(d=>!sampleCache[d]);
+    if (!missing.length) return;
+    setLoading(true);
+    setProgress({loaded:0, total:missing.length});
+    (async()=>{
+      let loaded=0;
+      for (const d of missing) {
+        if (cancelled) return;
+        try {
+          const res = await fetch(`/api/availability?date=${d}`);
+          if (!res.ok) {
+            const body = await res.json().catch(()=>({}));
+            throw new Error(body.error || `Erro ${res.status} ao buscar ${d}`);
+          }
+          const data = await res.json();
+          if (cancelled) return;
+          setSampleCache(prev=>({...prev,[d]:data}));
+          const cacheStatus = res.headers.get("X-Cache");
+          loaded++;
+          setProgress({loaded, total:missing.length});
+          if (cacheStatus!=="HIT" && d!==missing[missing.length-1]) {
+            await new Promise(r=>setTimeout(r,3500));
+          }
+        } catch(err) {
+          if (loaded===0) setFatalError(err.message);
+          loaded++;
+          setProgress({loaded, total:missing.length});
+        }
+      }
+      if (!cancelled) setLoading(false);
+    })();
+    return ()=>{ cancelled=true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[targetDates]);
 
   // Início calculado por inversor individualmente (sem smart start global)
 
   // Disponibilidade diária
-  const dailyAvail = useMemo(()=>
-    inverters.map(inv=>({
-      ...inv,
-      ...calcDayAvail(inv.data, detectInverterStart(inv.data))
-    }))
-  ,[inverters]);
-
-  // Meses disponíveis
-  const months = useMemo(()=>{
-    const s=new Set();
-    Object.values(allData||{}).forEach(inv=>Object.keys(inv.dates).forEach(d=>s.add(d.slice(0,7))));
-    return[...s].sort();
-  },[allData]);
-  const monthIdx = selMonth ? months.indexOf(selMonth) : -1;
+  const dailyAvail = useMemo(()=>{
+    const samples = sampleCache[selDate];
+    if (!samples) return [];
+    return Object.entries(samples)
+      .map(([sn,data])=>({ sn, name:invName(sn), ...calcDayAvail(data, detectInverterStart(data)) }))
+      .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}))
+      .map((inv,i)=>({...inv, color:invColor(i)}));
+  },[sampleCache, selDate]);
 
   // Disponibilidade mensal
   const monthlyAvail = useMemo(()=>{
-    if(!allData||!selMonth) return[];
-    return Object.values(allData).map(inv=>{
-      const monthDates=Object.keys(inv.dates).filter(d=>d.startsWith(selMonth)).sort();
-      if(!monthDates.length) return null;
-      let totalStoppedH=0;
-      const dayBreakdown=[];
-      monthDates.forEach(date=>{
-        const data=inv.dates[date];
-        const ss=detectInverterStart(data);
-        const res=calcDayAvail(data,ss);
-        totalStoppedH+=res.stoppedHours;
-        dayBreakdown.push({date,availability:res.availability,stoppedMins:res.stoppedMins});
+    const monthDates = dates.filter(d=>d.startsWith(selMonth));
+    const bySn = {};
+    monthDates.forEach(d=>{
+      const samples = sampleCache[d];
+      if (!samples) return;
+      Object.entries(samples).forEach(([sn,data])=>{
+        const res = calcDayAvail(data, detectInverterStart(data));
+        (bySn[sn] ??= []).push({date:d, availability:res.availability, stoppedMins:res.stoppedMins, stoppedHours:res.stoppedHours});
       });
-      const predicted=monthDates.length*12;
-      const avail=Math.max(0,Math.min(100,(predicted-totalStoppedH)/predicted*100));
-      return{invKey:inv.invKey,displayName:inv.displayName||inv.invKey,color:inv.color,
-        paletteIdx:inv.paletteIdx,availability:avail,stoppedHours:totalStoppedH,
-        days:monthDates.length,dayBreakdown};
-    }).filter(Boolean);
-  },[allData,selMonth]);
+    });
+    return Object.entries(bySn)
+      .map(([sn,dayBreakdown])=>{
+        const totalStoppedH = dayBreakdown.reduce((s,x)=>s+x.stoppedHours,0);
+        const predicted = dayBreakdown.length*12;
+        const avail = predicted>0 ? Math.max(0,Math.min(100,(predicted-totalStoppedH)/predicted*100)) : 0;
+        return { sn, name:invName(sn), invKey:sn, displayName:invName(sn),
+          availability:avail, stoppedHours:totalStoppedH, days:dayBreakdown.length, dayBreakdown };
+      })
+      .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}))
+      .map((inv,i)=>({...inv, color:invColor(i)}));
+  },[sampleCache, selMonth, dates]);
 
   const items = viewMode==="daily" ? dailyAvail : monthlyAvail;
-  const noData = !items.length;
+  const dateIdx = dates.indexOf(selDate);
+  const goPrevDay = () => { if(dateIdx>0) setSelDate(dates[dateIdx-1]); };
+  const goNextDay = () => { if(dateIdx<dates.length-1) setSelDate(dates[dateIdx+1]); };
+  const noData = !items.length && !loading;
 
   return(
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",padding:"10px 16px 8px",minHeight:0}}>
@@ -579,15 +630,21 @@ function AvailabilityPanel({ inverters, allData, selectedDate }) {
         </div>
 
         {/* Contexto */}
-        {viewMode==="daily"&&selectedDate&&(
-          <div style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:"var(--color-text-secondary)"}}>
-            <i className="ti ti-calendar" style={{fontSize:13}}/>
-            {(()=>{const[y,m,d]=selectedDate.split("-");return`${d}/${m}/${y}`;})()}
-            <span style={{fontSize:13,color:"#607D8B",padding:"2px 7px",borderRadius:4,background:"rgba(96,125,139,0.08)"}}>
-              <i className="ti ti-sun" style={{fontSize:13,marginRight:3}}/>
-              "Início estimado:"
-              
+        {viewMode==="daily"&&(
+          <div style={{display:"flex",alignItems:"center",gap:4}}>
+            <button onClick={goPrevDay} disabled={dateIdx<=0}
+              style={{background:"none",border:"none",cursor:dateIdx>0?"pointer":"default",fontSize:15,
+                color:dateIdx>0?"var(--color-text-secondary)":"var(--color-text-tertiary)",padding:"2px 4px"}}>
+              <i className="ti ti-chevron-left"/>
+            </button>
+            <span style={{fontSize:13,fontWeight:600,minWidth:88,textAlign:"center",fontFamily:"var(--font-mono)"}}>
+              {fmtYmd(selDate)}
             </span>
+            <button onClick={goNextDay} disabled={dateIdx>=dates.length-1}
+              style={{background:"none",border:"none",cursor:dateIdx<dates.length-1?"pointer":"default",fontSize:15,
+                color:dateIdx<dates.length-1?"var(--color-text-secondary)":"var(--color-text-tertiary)",padding:"2px 4px"}}>
+              <i className="ti ti-chevron-right"/>
+            </button>
           </div>
         )}
         {viewMode==="monthly"&&(
@@ -599,7 +656,7 @@ function AvailabilityPanel({ inverters, allData, selectedDate }) {
               <i className="ti ti-chevron-left"/>
             </button>
             <span style={{fontSize:13,fontWeight:600,minWidth:130,textAlign:"center"}}>
-              {selMonth?`${MONTH_FULL[parseInt(selMonth.slice(5,7))-1]} ${selMonth.slice(0,4)}`:"—"}
+              {selMonth?`${MONTH_FULL[parseInt(selMonth.slice(4,6))-1]} ${selMonth.slice(0,4)}`:"—"}
             </span>
             <button onClick={()=>{if(monthIdx<months.length-1)setSelMonth(months[monthIdx+1]);}}
               disabled={monthIdx>=months.length-1}
@@ -611,14 +668,32 @@ function AvailabilityPanel({ inverters, allData, selectedDate }) {
           </div>
         )}
 
+        {loading&&(
+          <div style={{display:"flex",alignItems:"center",gap:6,fontSize:13,color:"var(--color-text-tertiary)"}}>
+            <div style={{width:80,height:5,borderRadius:3,background:"var(--color-background-secondary)",overflow:"hidden"}}>
+              <div style={{width:`${(progress.loaded/Math.max(1,progress.total)*100).toFixed(0)}%`,height:"100%",
+                background:"#2E9BFF",transition:"width 0.3s"}}/>
+            </div>
+            <span>carregando {progress.loaded}/{progress.total}</span>
+          </div>
+        )}
+
       </div>
 
-      {noData?(
+      {fatalError?(
+        <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",
+          color:"var(--color-text-tertiary)",fontSize:13,textAlign:"center"}}>
+          <div>
+            <i className="ti ti-plug-connected-x" style={{fontSize:40,display:"block",marginBottom:8}}/>
+            {fatalError}
+          </div>
+        </div>
+      ):noData?(
         <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",
           color:"var(--color-text-tertiary)",fontSize:13,textAlign:"center"}}>
           <div>
             <i className="ti ti-chart-bar-off" style={{fontSize:40,display:"block",marginBottom:8}}/>
-            {viewMode==="daily"?"Selecione um dia com dados carregados":"Nenhum dado para o mês selecionado"}
+            {viewMode==="daily"?"Sem dados para este dia":"Nenhum dado para o mês selecionado"}
           </div>
         </div>
       ):(
@@ -700,7 +775,7 @@ function AvailabilityPanel({ inverters, allData, selectedDate }) {
                             background:`${availColor(db.availability)}1A`,
                             color:availColor(db.availability),
                             border:`1px solid ${availColor(db.availability)}44`}}>
-                          {db.date.slice(8)} {(db.availability??0).toFixed(0)}%
+                          {db.date.slice(6,8)} {(db.availability??0).toFixed(0)}%
                         </span>
                       ))}
                     </div>
@@ -1147,7 +1222,8 @@ function App() {
   const fmtPct=v=>v!==null?v.toFixed(2)+" %":"—";
   const alertC=v=>v===null?"var(--color-text-tertiary)":v<35?"#4CAF50":v<70?"#FF9800":"#F44336";
 
-  const showBottomPanel = activeTab!=="avail" && activeTab!=="gen" && stats.length>0;
+  const showFileTab = activeTab==="vars" || activeTab==="imbalance";
+  const showBottomPanel = showFileTab && stats.length>0;
 
   return(
     <div style={{display:"flex",flexDirection:"column",height:"100vh",width:"100vw",overflow:"hidden",fontFamily:"var(--font-sans)",
@@ -1217,7 +1293,8 @@ function App() {
       {/* ── Corpo principal ── */}
       <div style={{display:"flex",flex:1,overflow:"hidden",minHeight:0}}>
 
-      {/* ── Sidebar ── */}
+      {/* ── Sidebar (só nas abas com upload de .xlsx) ── */}
+      {showFileTab&&(<>
       <aside style={{width:sideW,flexShrink:0,display:"flex",flexDirection:"column",
         background:"var(--color-background-primary)",
         borderRight:"0.5px solid var(--color-border-tertiary)",
@@ -1335,6 +1412,7 @@ function App() {
         onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
         <div style={{width:2,height:40,borderRadius:2,background:"rgba(148,163,184,0.22)",pointerEvents:"none"}}></div>
       </div>
+      </>)}
 
       {/* ── Área principal ── */}
       <main style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0,minHeight:0}}>
@@ -1347,7 +1425,8 @@ function App() {
           <div style={{display:"flex",alignItems:"center",padding:"0 14px",
             borderBottom:"0.5px solid var(--color-border-tertiary)",minHeight:38}}>
 
-            {/* Setas de dia */}
+            {/* Setas de dia (só nas abas com upload de .xlsx) */}
+            {showFileTab&&(
             <div style={{display:"flex",alignItems:"center",gap:2,marginRight:14,flexShrink:0}}>
               <button onClick={prevDate} disabled={curIdx<=0}
                 style={{background:"none",border:"none",cursor:curIdx>0?"pointer":"default",fontSize:15,
@@ -1379,6 +1458,7 @@ function App() {
                 </span>
               )}
             </div>
+            )}
 
             {/* Abas */}
             {[
@@ -1430,12 +1510,16 @@ function App() {
 
         {/* ── Área do gráfico / disponibilidade ── */}
         <div style={{flex:1,margin:"12px 14px 8px",
-          padding:(activeTab==="avail"||activeTab==="combiners")?"0":"14px 16px 8px",minHeight:0,overflow:"hidden",
+          padding:!showFileTab?"0":"14px 16px 8px",minHeight:0,overflow:"hidden",
           display:"flex",flexDirection:"column",
           background:"#131C28",borderRadius:14,border:"1px solid rgba(255,255,255,0.06)",
           boxShadow:"0 12px 32px -16px rgba(0,0,0,0.75)"}}>
           {activeTab==="combiners"?(
             <CombinerPanel/>
+          ):activeTab==="avail"?(
+            <AvailabilityPanel/>
+          ):activeTab==="gen"?(
+            <GenerationPanel/>
           ):!selectedDate||inverters.length===0?(
             <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
               color:"var(--color-text-tertiary)",gap:14,textAlign:"center"}}>
@@ -1450,12 +1534,8 @@ function App() {
             </div>
           ):activeTab==="vars"?(
             <InverterChart inverters={inverters} varKeys={vars} onPointClick={setSelectedTime}/>
-          ):activeTab==="imbalance"?(
-            <ImbalanceChart inverters={inverters} onPointClick={setSelectedTime}/>
-          ):activeTab==="avail"?(
-            <AvailabilityPanel inverters={inverters} allData={allData} selectedDate={selectedDate}/>
           ):(
-            <GenerationPanel allData={allData} selectedDate={selectedDate} setSelectedDate={setSelectedDate}/>
+            <ImbalanceChart inverters={inverters} onPointClick={setSelectedTime}/>
           )}
         </div>
 
@@ -1743,9 +1823,15 @@ function ImbalanceTable({ imbalanceData, selectedTime, alertC, fmtPct }) {
 // ── Painel de Geração ─────────────────────────────────────────────────────────
 const GEN_PERIOD_LABELS = { daily:"Diário", weekly:"7 dias", monthly:"Mensal" };
 
-function GenerationPanel({ allData, selectedDate, setSelectedDate }) {
+function GenerationPanel() {
+  const dates = useMemo(()=>last30Dates(),[]);
+  const today = dates[dates.length-1];
   const [period, setPeriod] = useState("daily");
   const [unit, setUnit]     = useState("MWh");
+  const [selDate, setSelDate] = useState(today);
+  const [rows, setRows] = useState([]); // [{sn,date,eInjection,eAbsorption}]
+  const [loading, setLoading] = useState(true);
+  const [fatalError, setFatalError] = useState(null);
   const uF  = unit==="kWh" ? 1000 : 1;                 // fator de conversão (gen é calculada em MWh)
   const uDec = unit==="kWh" ? 0 : 3;                   // casas decimais p/ total/média
   const uDecR = unit==="kWh" ? 0 : 1;                  // casas decimais p/ rankings
@@ -1754,73 +1840,64 @@ function GenerationPanel({ allData, selectedDate, setSelectedDate }) {
   const canvasRef = useRef(null);
   const chartRef  = useRef(null);
 
-  // Dia mais recente com dados carregados
-  const latestDate = useMemo(()=>{
-    const ds=[...new Set(Object.values(allData||{}).flatMap(i=>Object.keys(i.dates||{})))].sort();
-    return ds.length?ds[ds.length-1]:null;
-  },[allData]);
-
   useEffect(()=>{ if(window._chartReady){setChartReady(true);return;} loadChartLibs().then(()=>setChartReady(true)); },[]);
 
-  // Agrega geração (dailyEnergyInjected ou soma pac) por inversor e período
+  // Uma única chamada cobre os últimos 30 dias — groupbyday já devolve o range inteiro
+  useEffect(()=>{
+    let cancelled = false;
+    (async()=>{
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/generation?from=${dates[0]}&to=${dates[dates.length-1]}`);
+        if (!res.ok) {
+          const body = await res.json().catch(()=>({}));
+          throw new Error(body.error || `Erro ${res.status}`);
+        }
+        const data = await res.json();
+        if (!cancelled) setRows(data);
+      } catch(err) {
+        if (!cancelled) setFatalError(err.message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return ()=>{ cancelled=true; };
+  },[dates]);
+
+  const dateIdx = dates.indexOf(selDate);
+  const goPrevDay = () => { if(dateIdx>0) setSelDate(dates[dateIdx-1]); };
+  const goNextDay = () => { if(dateIdx<dates.length-1) setSelDate(dates[dateIdx+1]); };
+
+  // Agrega geração (EInjection, kWh→MWh) por inversor e período, a partir do cache já baixado
   const genData = useMemo(()=>{
-    if(!allData||!selectedDate) return [];
-    const invs = Object.values(allData);
-
-    const sumPac = (data) => {
-      const vals = data.map(r=>r.pac).filter(v=>v!==null&&isFinite(v));
-      // Integração simples: cada ponto = 1min, pac em kW → kWh = kW * (1/60)
-      return vals.length ? vals.reduce((a,b)=>a+b,0)/60/1000 : 0; // kWh→MWh
-    };
-
-    const getInvGen = (inv, dates) => {
-      return dates.reduce((sum,d)=>{
-        const data=inv.dates[d];
-        if(!data) return sum;
-        // Prefer dailyEnergyInjected if available (last non-null value of day)
-        const injVals=data.map(r=>r.dailyEnergyInjected).filter(v=>v!==null&&isFinite(v));
-        if(injVals.length>0) return sum+injVals[injVals.length-1]/1000; // kWh→MWh
-        return sum+sumPac(data);
-      },0);
-    };
-
-    let dates = [];
+    if(!rows.length) return [];
+    let periodDates;
     if(period==="daily"){
-      dates=[selectedDate];
+      periodDates=new Set([selDate]);
     } else if(period==="weekly"){
-      const idx=Object.keys(allData).length>0
-        ? [...new Set(Object.values(allData).flatMap(i=>Object.keys(i.dates)))].sort()
-        : [];
-      const all=[...new Set(Object.values(allData).flatMap(i=>Object.keys(i.dates)))].sort();
-      const pos=all.indexOf(selectedDate);
-      dates=all.slice(Math.max(0,pos-6),pos+1);
+      periodDates=new Set(dates.slice(Math.max(0,dateIdx-6),dateIdx+1));
     } else {
-      const ym=selectedDate.slice(0,7);
-      dates=[...new Set(Object.values(allData).flatMap(i=>Object.keys(i.dates)))].filter(d=>d.startsWith(ym)).sort();
+      const ym=selDate.slice(0,6);
+      periodDates=new Set(dates.filter(d=>d.startsWith(ym)));
     }
-
-    return invs.map(inv=>{
-      const nm=inv.displayName||inv.invKey;
-      const digits=String(nm).replace(/\D/g,"");
-      const group=digits.length?digits.slice(-1):"?";
-      return {
-        invKey:inv.invKey,
-        name:nm,
-        color:inv.color,
-        paletteIdx:inv.paletteIdx,
-        gen:getInvGen(inv,dates),
-        group,
-      };
+    const bySn={};
+    rows.forEach(r=>{
+      if(!periodDates.has(r.date.replaceAll("-",""))) return;
+      (bySn[r.sn] ??= []).push(r);
     });
-  },[allData,selectedDate,period]);
+    return Object.entries(bySn)
+      .map(([sn,recs])=>({
+        invKey:sn, name:invName(sn),
+        gen: recs.reduce((s,r)=>s+(r.eInjection||0),0)/1000, // kWh → MWh
+      }))
+      .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}))
+      .map((d,i)=>({...d, color:invColor(i)}));
+  },[rows,period,selDate,dateIdx,dates]);
 
-  // Agrupa por terminação (1 vs 2) e ordena dentro de cada grupo
-  const groups = useMemo(()=>{
-    const g1=genData.filter(d=>d.group==="1").sort((a,b)=>b.gen-a.gen);
-    const g2=genData.filter(d=>d.group==="2").sort((a,b)=>b.gen-a.gen);
-    const other=genData.filter(d=>d.group!=="1"&&d.group!=="2").sort((a,b)=>b.gen-a.gen);
-    return {g1,g2,other};
-  },[genData]);
+  // Ranking único (a API não expõe grupo/nome amigável — sem separação "Final 1/2")
+  const groups = useMemo(()=>({
+    g1:[], g2:[], other:[...genData].sort((a,b)=>b.gen-a.gen),
+  }),[genData]);
 
   // Δ% entre maior e menor geração de um grupo
   const spreadPct = arr => {
@@ -1899,7 +1976,7 @@ function GenerationPanel({ allData, selectedDate, setSelectedDate }) {
               onClick={()=>setPeriod(p)}
               onDoubleClick={()=>{
                 setPeriod(p);
-                if((p==="daily"||p==="weekly")&&latestDate) setSelectedDate?.(latestDate);
+                if(p==="daily"||p==="weekly") setSelDate(today);
               }}
               title={p==="daily"?"Clique: período diário · 2× clique: ir ao dia mais recente"
                     :p==="weekly"?"Clique: 7 dias · 2× clique: 7 dias até o mais recente"
@@ -1925,6 +2002,23 @@ function GenerationPanel({ allData, selectedDate, setSelectedDate }) {
             </button>
           ))}
         </div>
+        {(period==="daily"||period==="weekly")&&(
+          <div style={{display:"flex",alignItems:"center",gap:4}}>
+            <button onClick={goPrevDay} disabled={dateIdx<=0}
+              style={{background:"none",border:"none",cursor:dateIdx>0?"pointer":"default",fontSize:15,
+                color:dateIdx>0?"var(--color-text-secondary)":"var(--color-text-tertiary)",padding:"2px 4px"}}>
+              <i className="ti ti-chevron-left"/>
+            </button>
+            <span style={{fontSize:13,fontWeight:600,minWidth:88,textAlign:"center",fontFamily:"var(--font-mono)"}}>
+              {fmtYmd(selDate)}
+            </span>
+            <button onClick={goNextDay} disabled={dateIdx>=dates.length-1}
+              style={{background:"none",border:"none",cursor:dateIdx<dates.length-1?"pointer":"default",fontSize:15,
+                color:dateIdx<dates.length-1?"var(--color-text-secondary)":"var(--color-text-tertiary)",padding:"2px 4px"}}>
+              <i className="ti ti-chevron-right"/>
+            </button>
+          </div>
+        )}
         <div style={{fontSize:13,color:"var(--color-text-secondary)"}}>
           <strong>{genData.length}</strong> inversores
           · Total: <strong style={{color:"#2E9BFF"}}>{fmtU(total||0,uDec)} {unit}</strong>
@@ -1938,10 +2032,15 @@ function GenerationPanel({ allData, selectedDate, setSelectedDate }) {
         {/* ── Gráfico de barras horizontais ── */}
         <div style={{flex:1,minWidth:0,paddingRight:12,display:"flex",flexDirection:"column",overflow:"hidden"}}>
           <div style={{flex:1,minHeight:0,position:"relative"}}>
-            {!chartReady||!genData.length?(
+            {fatalError?(
+              <div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",
+                color:"var(--color-text-tertiary)",fontSize:13,textAlign:"center"}}>
+                <div><i className="ti ti-plug-connected-x" style={{fontSize:40,display:"block",marginBottom:8}}/>{fatalError}</div>
+              </div>
+            ):!chartReady||loading||!genData.length?(
               <div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",
                 color:"var(--color-text-tertiary)",fontSize:13}}>
-                {!genData.length?"Sem dados para o período":"Carregando…"}
+                {loading?"Carregando…":!genData.length?"Sem dados para o período":"Carregando…"}
               </div>
             ):(
               <canvas ref={canvasRef} role="img"/>
@@ -2107,10 +2206,12 @@ async function fetchStringboxDay(date, isToday, attempt=0) {
   return parsed;
 }
 
-function CombinerChart({ records }) {
+function CombinerChart({ records, onPointClick }) {
   const canvasRef = useRef(null);
   const chartRef  = useRef(null);
+  const cbRef     = useRef(onPointClick);
   const [ready, setReady] = useState(!!window._chartReady);
+  useEffect(()=>{ cbRef.current=onPointClick; },[onPointClick]);
   useEffect(()=>{ if(window._chartReady){registerSmartTooltip();setReady(true);return;} loadChartLibs().then(()=>setReady(true)); },[]);
 
   useEffect(()=>{
@@ -2132,6 +2233,7 @@ function CombinerChart({ records }) {
       options:{
         responsive:true, maintainAspectRatio:false, animation:false,
         interaction:{mode:"index",intersect:false},
+        onClick:(_,els,ch)=>{if(!els.length)return;cbRef.current?.(ch.data.labels[els[0].index]);},
         plugins:{
           legend:{display:true,position:"bottom",labels:{color:"#8595A6",boxWidth:10,font:{size:10}}},
           tooltip:{position:"smart",backgroundColor:"rgba(38,50,68,0.97)",titleColor:"#A7B6C6",bodyColor:"#EAF2FB",
@@ -2176,6 +2278,9 @@ function CombinerPanel() {
   const [selDate, setSelDate]   = useState(today);
   const [selGid, setSelGid]     = useState(null);
   const [fatalError, setFatalError] = useState(null);
+  const [selectedTime, setSelectedTime] = useState(null);
+
+  useEffect(()=>{ setSelectedTime(null); },[selDate]);
 
   useEffect(()=>{
     // Flag local por execução do efeito — um useRef compartilhado não isolaria
@@ -2245,6 +2350,26 @@ function CombinerPanel() {
     return { time:last.time, min, max };
   },[records]);
 
+  // Ranking de todos os 30 combinadores no horário clicado, separado por 16 vs 17 entradas
+  // (comparar direto entre grupos seria injusto — um combinador de 17 soma mais só por ter mais canais).
+  const rankingAnalysis = useMemo(()=>{
+    if (!selectedTime) return null;
+    const byGid = dayData[selDate];
+    if (!byGid) return null;
+    const rows = Object.entries(byGid).map(([gid,recs])=>{
+      const rec = recs.find(r=>r.time===selectedTime);
+      if (!rec) return null;
+      const vals = rec.idc.filter(v=>v!=null&&isFinite(v));
+      if (!vals.length) return null;
+      return { gid, label:combinerMeta(gid).label, channelCount:rec.idc.length,
+        avg: vals.reduce((s,v)=>s+v,0)/vals.length };
+    }).filter(Boolean);
+    return {
+      cohort16: rows.filter(r=>r.channelCount===16).sort((a,b)=>a.avg-b.avg),
+      cohort17: rows.filter(r=>r.channelCount===17).sort((a,b)=>a.avg-b.avg),
+    };
+  },[selectedTime, dayData, selDate]);
+
   return(
     <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",padding:"10px 16px 8px",minHeight:0}}>
       {/* Header */}
@@ -2305,12 +2430,21 @@ function CombinerPanel() {
             <span>Última leitura <strong style={{fontFamily:"var(--font-mono)"}}>{summary.time}</strong></span>
             <span style={{color:"#4CAF50"}}>▲ Entrada {summary.max.i+1} ({summary.max.v.toFixed(1)}A)</span>
             <span style={{color:"#F44336"}}>▼ Entrada {summary.min.i+1} ({summary.min.v.toFixed(1)}A)</span>
+            {selectedTime&&(
+              <span style={{color:"#2E9BFF",display:"inline-flex",alignItems:"center",gap:4}}>
+                <i className="ti ti-map-pin" style={{fontSize:13}}/><strong>{selectedTime}</strong>
+                <button onClick={()=>setSelectedTime(null)}
+                  style={{background:"none",border:"none",cursor:"pointer",fontSize:13,color:"#2E9BFF",padding:0,lineHeight:1,marginLeft:1}}>
+                  <i className="ti ti-x"/>
+                </button>
+              </span>
+            )}
           </div>
         )}
       </div>
 
       {/* Gráfico */}
-      <div style={{flex:1,minHeight:0}}>
+      <div style={{flex:selectedTime?"1 1 58%":"1 1 auto",minHeight:0}}>
         {fatalError?(
           <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
             gap:10,color:"var(--color-text-tertiary)",textAlign:"center"}}>
@@ -2324,9 +2458,48 @@ function CombinerPanel() {
             <div style={{fontSize:13}}>Carregando combiners da API…</div>
           </div>
         ):(
-          <CombinerChart records={records}/>
+          <CombinerChart records={records} onPointClick={setSelectedTime}/>
         )}
       </div>
+
+      {/* Análise: ranking dos 30 combinadores no horário clicado, separado por 16 vs 17 entradas */}
+      {!selectedTime?(
+        <div style={{flexShrink:0,paddingTop:8,fontSize:13,color:"var(--color-text-tertiary)",textAlign:"center"}}>
+          <i className="ti ti-hand-click" style={{marginRight:5}}/>Clique num ponto do gráfico para comparar todos os combinadores nesse horário
+        </div>
+      ):rankingAnalysis&&(
+        <div style={{flex:"0 0 38%",display:"flex",gap:12,paddingTop:10,marginTop:8,minHeight:0,
+          borderTop:"0.5px solid var(--color-border-tertiary)"}}>
+          {[{title:"16 entradas",arr:rankingAnalysis.cohort16},{title:"17 entradas",arr:rankingAnalysis.cohort17}].map(({title,arr})=>(
+            <div key={title} style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:600,color:"var(--color-text-tertiary)",textTransform:"uppercase",
+                letterSpacing:"0.05em",marginBottom:6,flexShrink:0}}>
+                Combinadores de {title} — piores às {selectedTime}
+              </div>
+              <div style={{overflowY:"auto",flex:1,display:"flex",flexDirection:"column",gap:3}}>
+                {!arr.length?(
+                  <div style={{fontSize:13,color:"var(--color-text-tertiary)"}}>Sem dados neste horário</div>
+                ):arr.map((r,i)=>{
+                  const worst = i===0;
+                  const isSelected = r.gid===selGid;
+                  return(
+                    <div key={r.gid} onClick={()=>setSelGid(r.gid)}
+                      style={{display:"flex",alignItems:"center",gap:8,padding:"3px 8px",borderRadius:5,cursor:"pointer",
+                        background:isSelected?"rgba(46,155,255,0.14)":worst?"rgba(244,67,54,0.10)":"var(--color-background-secondary)",
+                        border:isSelected?"1px solid rgba(46,155,255,0.45)":"1px solid transparent"}}>
+                      <span style={{fontSize:13,color:"var(--color-text-tertiary)",fontWeight:700,minWidth:16,textAlign:"center"}}>#{i+1}</span>
+                      <span style={{fontSize:13,fontWeight:600,flex:1,overflow:"hidden",textOverflow:"ellipsis",
+                        whiteSpace:"nowrap",color:"var(--color-text-primary)"}} title={r.label}>{r.label}</span>
+                      <span style={{fontSize:13,fontFamily:"var(--font-mono)",fontWeight:700,flexShrink:0,
+                        color:worst?"#F44336":"var(--color-text-secondary)"}}>{r.avg.toFixed(2)} A</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
