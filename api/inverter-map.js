@@ -32,6 +32,11 @@ const SCAN_DAYS = 5;
 // mais de SCAN_DAYS dias sem comunicar (manutenção, falha prolongada etc.) simplesmente some
 // do mapa reconstruído do zero a cada chamada, e o nome volta a aparecer como "SN ####" —
 // mesmo já tendo sido resolvido antes. Uma vez resolvido, o board não deve mais "esquecer".
+//
+// A varredura ao vivo (5 chamadas sequenciais à API do INGECON) é lenta (~40s) — por isso só
+// roda quando explicitamente pedida (?refresh=1, disparado pelo botão "Atualizar") ou na
+// primeiríssima vez (tabela ainda vazia). Toda outra chamada só lê o cache persistido, que
+// responde na hora.
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     res.setHeader("Allow", "GET");
@@ -52,6 +57,12 @@ export default async function handler(req, res) {
 
   const map = {};
   (persisted || []).forEach(r => { map[r.board_id] = r.pos; });
+
+  const forceRefresh = req.query.refresh === "1";
+  if (!forceRefresh && Object.keys(map).length) {
+    res.setHeader("Cache-Control", "public, s-maxage=86400, stale-while-revalidate=604800");
+    return res.status(200).json(map);
+  }
 
   let headers;
   try {

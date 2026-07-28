@@ -520,13 +520,18 @@ function invColor(idx) { return PALETTE[idx % PALETTE.length]; }
 // pelo botão "Atualizar" pra descartar um mapa que ficou incompleto por alguma falha.
 let _inverterMapCache = null;
 let _inverterMapPromise = null;
-function resetInverterMapCache() { _inverterMapCache = null; _inverterMapPromise = null; }
+let _inverterMapForceRefresh = false;
+// `refresh` força o back-end a revarrer a API do INGECON ao vivo (~40s) em vez de só ler o
+// cache persistido — só deve acontecer quando o usuário pede via botão "Atualizar".
+function resetInverterMapCache() { _inverterMapCache = null; _inverterMapPromise = null; _inverterMapForceRefresh = true; }
 function useInverterMap(refreshTick) {
   const [map, setMap] = useState(_inverterMapCache || {});
   useEffect(()=>{
     if (_inverterMapCache) { setMap(_inverterMapCache); return; }
     if (!_inverterMapPromise) {
-      _inverterMapPromise = fetch("/api/inverter-map").then(r=>r.ok?r.json():{}).catch(()=>({}));
+      const url = _inverterMapForceRefresh ? "/api/inverter-map?refresh=1" : "/api/inverter-map";
+      _inverterMapForceRefresh = false;
+      _inverterMapPromise = fetch(url).then(r=>r.ok?r.json():{}).catch(()=>({}));
     }
     let cancelled=false;
     _inverterMapPromise.then(m=>{ _inverterMapCache=m; if(!cancelled) setMap(m); });
