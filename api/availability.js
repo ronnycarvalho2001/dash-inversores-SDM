@@ -1,6 +1,18 @@
 import { getSupabase, lazyCleanup } from "./_lib/supabase.js";
 import { plantId, ingeconHeaders, todayInPlantTz, toISODate } from "./_lib/ingecon.js";
 
+// Um dia fechado só é considerado "definitivo" no cache se os dados cobrem (quase) o dia
+// inteiro. Caso contrário, o cache foi gravado no meio do dia (alguém abriu o dash antes das
+// 17:30) e nunca mais foi atualizado — inversor que caiu horas depois da última visita fica
+// escondido pra sempre, mostrando o último valor positivo salvo em vez da queda real.
+const COMPLETE_THRESHOLD_MINS = 17 * 60; // 17:00
+
+function lastSampleMins(samples) {
+  if (!samples || !samples.length) return -1;
+  const [h, m] = samples[samples.length - 1].time.split(":").map(Number);
+  return h * 60 + m;
+}
+
 // Proxy + cache (Supabase) para as leituras de Pac (15 min) por inversor de um dia,
 // usadas pelo painel de Disponibilidade. Fonte: /ingecon/samplesv2/plant/{id}/date/{date}.
 // Nota: a coluna "sn" da tabela guarda o BoardId (não o SN da API) — ver comentário abaixo.
@@ -32,10 +44,15 @@ export default async function handler(req, res) {
       .eq("date", isoDate);
     if (readErr) return res.status(500).json({ error: "Erro ao ler cache: " + readErr.message });
     if (cachedRows && cachedRows.length) {
-      await lazyCleanup(supabase).catch(() => {});
-      res.setHeader("Cache-Control", "public, s-maxage=86400, stale-while-revalidate=604800");
-      res.setHeader("X-Cache", "HIT");
-      return res.status(200).json(Object.fromEntries(cachedRows.map(r => [r.sn, r.samples])));
+      const maxLastMins = Math.max(...cachedRows.map(r => lastSampleMins(r.samples)));
+      if (maxLastMins >= COMPLETE_THRESHOLD_MINS) {
+        await lazyCleanup(supabase).catch(() => {});
+        res.setHeader("Cache-Control", "public, s-maxage=86400, stale-while-revalidate=604800");
+        res.setHeader("X-Cache", "HIT");
+        return res.status(200).json(Object.fromEntries(cachedRows.map(r => [r.sn, r.samples])));
+      }
+      // Cache incompleto (dia fechado congelado no meio da tarde) — busca de novo na API,
+      // que agora devolve o dia inteiro já que ele já terminou.
     }
   }
 
