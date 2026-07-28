@@ -161,11 +161,14 @@ function findStopIntervals(timeline) {
 }
 
 // Detecta o início de cálculo de disponibilidade POR INVERSOR:
-// — Se o inversor começou a gerar estritamente antes das 05:59 → conta a partir do seu início real
-// — Se começou às 05:59 ou depois (ou nunca gerou) → conta desde 05:30 (indisponível)
+// — Se o inversor começou a gerar até as 06:00 → conta a partir do seu início real (variação
+//   normal de irradiância/sombreamento entre inversores — já visto inversor partindo às 05:45
+//   e outro só às 06:00 no mesmo dia, sem nenhuma falha)
+// — Se começou depois das 06:00 (ou nunca gerou) → conta desde 05:30 (indisponível), pois aí
+//   sim o intervalo 05:30–06:00 indica uma parada real, não irradiância
 function detectInverterStart(data) {
   const defMins = timeToMins(AVAIL_DEF_START); // 05:30
-  const cutoff  = timeToMins("05:59");          // exclusivo: só antes de 05:59
+  const cutoff  = timeToMins("06:00");          // inclusivo: início até 06:00 é natural
   if (!data || !data.length) return defMins;
   const gen = data.find(r =>
     r.time >= AVAIL_DEF_START && r.time <= AVAIL_END &&
@@ -173,7 +176,7 @@ function detectInverterStart(data) {
   );
   if (!gen) return defMins;
   const m = timeToMins(gen.time);
-  return m < cutoff ? m : defMins;
+  return m <= cutoff ? m : defMins;
 }
 
 // Mantido para compatibilidade com chamadas existentes (usa detectInverterStart internamente)
