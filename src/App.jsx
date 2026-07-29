@@ -1982,17 +1982,23 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
       if(!periodDates.has(r.date.replaceAll("-",""))) return;
       (bySn[r.sn] ??= []).push(r);
     });
-    return Object.entries(bySn)
+    const list = Object.entries(bySn)
       .map(([sn,recs])=>{
         const pos = invMap[sn]; // ex.: "3.4.1"
         return {
           invKey:sn, name:invName(sn,invMap),
           gen: recs.reduce((s,r)=>s+(r.eInjection||0),0)/1000, // kWh → MWh
           group: pos ? pos.slice(-1) : null, // "1" (17 combiners) ou "2" (16 combiners)
+          pairKey: pos ? pos.slice(0,pos.lastIndexOf(".")) : null, // ex.: "3.4" — mesmo par entre 3.4.1 e 3.4.2
         };
       })
-      .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}))
-      .map((d,i)=>({...d, color:invColor(i)}));
+      .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
+    // Cor por par (3.x.1/3.x.2), não por posição na lista — assim o mesmo inversor "espelhado"
+    // nos dois agrupamentos (17 e 16 combiners) fica com a mesma cor, fácil de comparar.
+    const pairKeys = [...new Set(list.map(d=>d.pairKey ?? d.invKey))]
+      .sort((a,b)=>String(a).localeCompare(String(b),undefined,{numeric:true}));
+    const colorByPair = Object.fromEntries(pairKeys.map((k,i)=>[k, invColor(i)]));
+    return list.map(d=>({...d, color: colorByPair[d.pairKey ?? d.invKey]}));
   },[rows,period,selDate,dateIdx,dates,invMap]);
 
   // Agrupa por posição: termina em 1 → inversor com 17 combiners; termina em 2 → 16 combiners
