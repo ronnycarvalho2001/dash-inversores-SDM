@@ -1922,7 +1922,7 @@ function ImbalanceTable({ imbalanceData, selectedTime, alertC, fmtPct }) {
 // Curva de potência (Pac, kW) ao longo do dia, uma linha por inversor — mesmo formato do
 // gráfico de Combiners, só que por inversor em vez de por canal, pra achar em que horário
 // a geração cai.
-function GenerationCurveChart({ title, entries, pacMap }) {
+function GenerationCurveChart({ entries, pacMap }) {
   const canvasRef = useRef(null);
   const chartRef  = useRef(null);
   const [ready, setReady] = useState(!!window._chartReady);
@@ -1976,7 +1976,6 @@ function GenerationCurveChart({ title, entries, pacMap }) {
 
   return(
     <div style={{position:"relative",width:"100%",height:"100%",display:"flex",flexDirection:"column"}}>
-      <div style={{fontSize:12,fontWeight:600,color:"var(--color-text-secondary)",flexShrink:0,marginBottom:2}}>{title}</div>
       <div style={{flex:1,minHeight:0,position:"relative"}}>
         {(!ready||!entries.length||!pacMap)&&(
           <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",
@@ -2310,12 +2309,12 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
                 <div style={{display:"flex",flexDirection:"column",gap:8,height:"100%",minHeight:0}}>
                   {groups.g1.length>0&&(
                     <div style={{flex:1,minHeight:0}}>
-                      <GenerationCurveChart title="Final 1" entries={groups.g1} pacMap={pacByDate[selDate]}/>
+                      <GenerationCurveChart entries={groups.g1} pacMap={pacByDate[selDate]}/>
                     </div>
                   )}
                   {groups.g2.length>0&&(
                     <div style={{flex:1,minHeight:0}}>
-                      <GenerationCurveChart title="Final 2" entries={groups.g2} pacMap={pacByDate[selDate]}/>
+                      <GenerationCurveChart entries={groups.g2} pacMap={pacByDate[selDate]}/>
                     </div>
                   )}
                 </div>
