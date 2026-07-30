@@ -547,20 +547,39 @@ let _inverterMapForceRefresh = false;
 // `refresh` força o back-end a revarrer a API do INGECON ao vivo (~40s) em vez de só ler o
 // cache persistido — só deve acontecer quando o usuário pede via botão "Atualizar".
 function resetInverterMapCache() { _inverterMapCache = null; _inverterMapPromise = null; _inverterMapForceRefresh = true; }
-function useInverterMap(refreshTick) {
+function useInverterMap(refreshTick, autoSyncTick) {
   const [map, setMap] = useState(_inverterMapCache || {});
   useEffect(()=>{
     if (_inverterMapCache) { setMap(_inverterMapCache); return; }
     if (!_inverterMapPromise) {
       const url = _inverterMapForceRefresh ? "/api/inverter-map?refresh=1" : "/api/inverter-map";
       _inverterMapForceRefresh = false;
-      _inverterMapPromise = fetch(url).then(r=>r.ok?r.json():{}).catch(()=>({}));
+      // Numa falha (rede, Supabase fora do ar etc.) NÃO grava cache vazio — isso travaria os
+      // nomes em "SN ####" pra sempre, já que uma vez cacheado (mesmo vazio) nada tentaria de
+      // novo sozinho. Em vez disso, descarta a promise (`_inverterMapPromise=null`) pra que a
+      // próxima montagem/auto-sync tente buscar de novo.
+      _inverterMapPromise = fetch(url)
+        .then(r=>{ if(!r.ok) throw new Error(`Erro ${r.status}`); return r.json(); })
+        .catch(err=>{ _inverterMapPromise=null; throw err; });
     }
     let cancelled=false;
-    _inverterMapPromise.then(m=>{ _inverterMapCache=m; if(!cancelled) setMap(m); });
+    _inverterMapPromise
+      .then(m=>{ _inverterMapCache=m; if(!cancelled) setMap(m); })
+      .catch(()=>{ /* falha silenciosa — próxima montagem/auto-sync tenta de novo */ });
     return ()=>{ cancelled=true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[refreshTick]);
+
+  // Auto-sync (a cada ~15min, roda sempre em segundo plano — ver useAutoSync/runAutoSync no
+  // App): relê o cache já revalidado por runAutoSync, o que também recupera sozinho de uma
+  // falha anterior — sem precisar clicar "Atualizar".
+  const lastMapAutoTickRef = useRef(autoSyncTick);
+  useEffect(()=>{
+    if (autoSyncTick===lastMapAutoTickRef.current) return;
+    lastMapAutoTickRef.current = autoSyncTick;
+    if (_inverterMapCache) setMap(_inverterMapCache);
+  },[autoSyncTick]);
+
   return map;
 }
 
@@ -581,8 +600,9 @@ async function runAutoSync() {
     fetch(`/api/generation?from=${dates[0]}&to=${today}`),
     fetch(`/api/availability?date=${today}`),
     fetch(`/api/stringbox?date=${today}`),
+    fetch(`/api/inverter-map`), // sem ?refresh=1 — só relê o cache persistido (rápido), nunca a varredura ao vivo
   ]);
-  const [genRes, pacRes, sbRes] = results;
+  const [genRes, pacRes, sbRes, mapRes] = results;
   if (genRes.status==="fulfilled" && genRes.value.ok) {
     try { _genRowsCache = await genRes.value.json(); } catch { /* resposta inválida — mantém cache anterior */ }
   }
@@ -591,6 +611,11 @@ async function runAutoSync() {
   }
   if (sbRes.status==="fulfilled" && sbRes.value.ok) {
     try { _combinerCache = { ..._combinerCache, [today]: groupStringboxByGId(await sbRes.value.json()) }; } catch { /* idem */ }
+  }
+  // Revalida o mapa BoardId→inversor a cada ciclo — se uma falha anterior tiver deixado o
+  // cache vazio/incompleto, isso o recupera sozinho, sem precisar clicar "Atualizar".
+  if (mapRes.status==="fulfilled" && mapRes.value.ok) {
+    try { const m = await mapRes.value.json(); if (m && Object.keys(m).length) _inverterMapCache = m; } catch { /* idem */ }
   }
 }
 
@@ -623,7 +648,7 @@ function useAutoSync() {
 }
 
 function AvailabilityPanel({ onLastUpdated, refreshTick, autoSyncTick }) {
-  const invMap = useInverterMap(refreshTick);
+  const invMap = useInverterMap(refreshTick, autoSyncTick);
   const dates = useMemo(()=>last30Dates(),[]);
   const today = dates[dates.length-1];
   const [viewMode, setViewMode] = useState("daily");
@@ -2078,7 +2103,7 @@ function GenerationCurveChart({ entries, pacMap, viewKey }) {
 const GEN_PERIOD_LABELS = { daily:"Diário", weekly:"7 dias", monthly:"Mensal" };
 
 function GenerationPanel({ onLastUpdated, refreshTick, autoSyncTick }) {
-  const invMap = useInverterMap(refreshTick);
+  const invMap = useInverterMap(refreshTick, autoSyncTick);
   const dates = useMemo(()=>last30Dates(),[]);
   const today = dates[dates.length-1];
   const [period, setPeriod] = useState("daily");
