@@ -594,17 +594,23 @@ async function runAutoSync() {
   }
 }
 
-// Agenda a próxima sincronização pra 90s depois da marca de 15min mais próxima no futuro
-// (13:01:30, 13:16:30, 13:31:30…) — dá tempo da API upstream ter a leitura nova pronta.
+// Duas tentativas por marca de 15min do INGECON (13:00, 13:15, 13:30…): a primeira 1min
+// depois (13:01:00) e a segunda mais 1min depois (13:02:00), pra garantir que pegou a
+// leitura nova mesmo se a primeira tentativa ainda estivesse cedo demais.
+const AUTO_SYNC_OFFSETS = [60*1000, 120*1000];
 function useAutoSync() {
   const [tick, setTick] = useState(0);
   useEffect(()=>{
     let timer, cancelled=false;
-    const QUARTER=15*60*1000, OFFSET=90*1000;
+    const QUARTER=15*60*1000;
+    function nextRun(now) {
+      const base = Math.floor(now/QUARTER)*QUARTER;
+      for (const off of AUTO_SYNC_OFFSETS) { if (base+off>now) return base+off; }
+      return base+QUARTER+AUTO_SYNC_OFFSETS[0];
+    }
     function schedule() {
       const now=Date.now();
-      let next=Math.floor(now/QUARTER)*QUARTER+OFFSET;
-      if (next<=now) next+=QUARTER;
+      const next=nextRun(now);
       timer=setTimeout(async()=>{
         await runAutoSync().catch(()=>{});
         if (!cancelled) { setTick(t=>t+1); schedule(); }
