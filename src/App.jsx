@@ -2310,12 +2310,12 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
                 <div style={{display:"flex",flexDirection:"column",gap:8,height:"100%",minHeight:0}}>
                   {groups.g1.length>0&&(
                     <div style={{flex:1,minHeight:0}}>
-                      <GenerationCurveChart title="Final 1 (17 combiners)" entries={groups.g1} pacMap={pacByDate[selDate]}/>
+                      <GenerationCurveChart title="Final 1" entries={groups.g1} pacMap={pacByDate[selDate]}/>
                     </div>
                   )}
                   {groups.g2.length>0&&(
                     <div style={{flex:1,minHeight:0}}>
-                      <GenerationCurveChart title="Final 2 (16 combiners)" entries={groups.g2} pacMap={pacByDate[selDate]}/>
+                      <GenerationCurveChart title="Final 2" entries={groups.g2} pacMap={pacByDate[selDate]}/>
                     </div>
                   )}
                 </div>
