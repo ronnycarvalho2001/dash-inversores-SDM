@@ -1908,6 +1908,7 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
   const today = dates[dates.length-1];
   const [period, setPeriod] = useState("daily");
   const [unit, setUnit]     = useState("MWh");
+  const [chartType, setChartType] = useState("line"); // "line" (curva) ou "bar" (colunas)
   const [selDate, setSelDate] = useState(today);
   const [rows, setRows] = useState([]); // [{sn,date,eInjection,eAbsorption}]
   const [loading, setLoading] = useState(true);
@@ -2016,7 +2017,7 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
     return min>0 ? (max-min)/min*100 : null;
   };
 
-  // Render bar chart via Chart.js
+  // Render gráfico (colunas ou linha) via Chart.js
   useEffect(()=>{
     if(!chartReady||!canvasRef.current||!genData.length) return;
     if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}
@@ -2030,11 +2031,27 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
     const labels=ordered.map(d=>d.name);
     const values=ordered.map(d=>d.spacer?null:d.gen*uF);
     const colors=ordered.map(d=>d.color);
+    const isLine=chartType==="line";
+    const valueAxis=isLine?"y":"x", labelAxis=isLine?"x":"y";
     chartRef.current=new window.Chart(canvasRef.current,{
-      type:"bar",
+      type:isLine?"line":"bar",
       data:{
         labels,
-        datasets:[{
+        datasets:[isLine?{
+          label:"Geração (MWh)",
+          data:values,
+          borderColor:"#2E9BFF",
+          backgroundColor:"#2E9BFF",
+          borderWidth:2,
+          tension:0.35,
+          spanGaps:false, // quebra a linha no espaçador — separa final 1 / final 2 / outros
+          pointBackgroundColor:colors,
+          pointBorderColor:colors,
+          pointRadius:4,
+          pointHoverRadius:6,
+          pointBorderWidth:1.5,
+          fill:false,
+        }:{
           label:"Geração (MWh)",
           data:values,
           backgroundColor:colors.map(c=>c+"cc"),
@@ -2044,7 +2061,7 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
         }]
       },
       options:{
-        indexAxis:"y",  // barras horizontais — mais legível com muitos inversores
+        indexAxis:isLine?"x":"y",  // linha: posição no eixo x, curva vertical · colunas: barras horizontais (mais legível com muitos inversores)
         responsive:true,maintainAspectRatio:false,animation:false,
         plugins:{
           legend:{display:false},
@@ -2052,25 +2069,25 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
             backgroundColor:"rgba(38,50,68,0.97)",titleColor:"#A7B6C6",bodyColor:"#EAF2FB",
             borderColor:"#e0e0e0",borderWidth:1,padding:10,
             callbacks:{
-              label:ctx=>`  ${ctx.parsed.x.toLocaleString("pt-BR",{maximumFractionDigits:uDecR})} ${unit}`,
+              label:ctx=>`  ${ctx.parsed[valueAxis].toLocaleString("pt-BR",{maximumFractionDigits:uDecR})} ${unit}`,
             }
           }
         },
         scales:{
-          x:{
+          [labelAxis]:{
+            ticks:{color:"#8595A6",font:{size:isLine?9:11},maxRotation:isLine?60:0,minRotation:isLine?60:0,autoSkip:true},
+            grid:{color:"rgba(0,0,0,0.04)"},border:{color:"rgba(0,0,0,0.12)"},
+          },
+          [valueAxis]:{
             ticks:{color:"#8595A6",font:{size:11}},
             grid:{color:"rgba(148,163,184,0.10)"},border:{color:"rgba(148,163,184,0.22)"},
             title:{display:true,text:unit,color:"#A7B6C6",font:{size:11}},
-          },
-          y:{
-            ticks:{color:"#8595A6",font:{size:11}},
-            grid:{color:"rgba(0,0,0,0.04)"},border:{color:"rgba(0,0,0,0.12)"},
           },
         },
       },
     });
     return()=>{if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}};
-  },[chartReady,groups,unit]);
+  },[chartReady,groups,unit,chartType,uDecR]);
 
   const total   = genData.reduce((s,d)=>s+d.gen,0);
   const avg     = genData.length>0 ? total/genData.length : 0;
@@ -2109,6 +2126,19 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
                 color:unit===u?"#fff":"var(--color-text-secondary)",
                 fontWeight:unit===u?600:400,transition:"all 0.15s"}}>
               {u}
+            </button>
+          ))}
+        </div>
+        {/* Toggle tipo de gráfico */}
+        <div style={{display:"flex",gap:2,background:"var(--color-background-secondary)",padding:3,borderRadius:8,flexShrink:0}}>
+          {[{k:"bar",label:"Colunas",icon:"ti-chart-bar"},{k:"line",label:"Linha",icon:"ti-chart-line"}].map(({k,label,icon})=>(
+            <button key={k} onClick={()=>setChartType(k)}
+              title={k==="line"?"Gráfico em linha — mais fácil de ver em qual inversor/posição a geração cai":"Gráfico em colunas"}
+              style={{padding:"5px 12px",fontSize:13,cursor:"pointer",borderRadius:6,border:"none",display:"flex",alignItems:"center",gap:5,
+                background:chartType===k?"#2E9BFF":"transparent",
+                color:chartType===k?"#fff":"var(--color-text-secondary)",
+                fontWeight:chartType===k?600:400,transition:"all 0.15s"}}>
+              <i className={`ti ${icon}`}/>{label}
             </button>
           ))}
         </div>
