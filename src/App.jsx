@@ -2162,7 +2162,7 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
       },
     });
     return()=>{if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}};
-  },[chartReady,groups,unit]);
+  },[chartReady,groups,unit,chartType,period]); // chartType/period: reconstrói ao voltar da curva por horário (canvas é remontado)
 
   // Curva por horário (Pac, kW) — só faz sentido no período Diário; busca sob demanda e cacheia por data
   const showCurve = chartType==="line" && period==="daily";
