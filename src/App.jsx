@@ -517,6 +517,26 @@ const MONTH_FULL = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho
 
 function invName(sn, map) { return (map&&map[sn]) || `SN ${String(sn).slice(-4)}`; }
 function invColor(idx) { return PALETTE[idx % PALETTE.length]; }
+
+// Eixo X em horário (HH:MM) com espaçamento adaptativo de ticks — usado por gráficos de
+// série temporal intradiária (Combiners, curva de Geração), pra não empilhar labels.
+function timeAxisScale() {
+  return {
+    afterBuildTicks: axis => {
+      const tks = axis.ticks;
+      if (!tks.length) return;
+      const toMin = l => (l && l.length>=5) ? parseInt(l.slice(0,2),10)*60+parseInt(l.slice(3,5),10) : null;
+      const f = toMin(axis.getLabelForValue(tks[0].value)), lt = toMin(axis.getLabelForValue(tks[tks.length-1].value));
+      const span = (f!=null && lt!=null) ? Math.max(1,Math.abs(lt-f)) : 60;
+      const steps = [1,2,5,10,15,20,30,60,120,180];
+      let step = 180;
+      for (const s of steps) { if (span/s<=14) { step=s; break; } }
+      axis.ticks = tks.filter(tk => { const m=toMin(axis.getLabelForValue(tk.value)); return m!=null && m%step===0; });
+    },
+    ticks:{color:"#8595A6",font:{size:11},maxRotation:0,autoSkip:false,callback:function(value){return this.getLabelForValue(value)||"";}},
+    grid:{color:"rgba(148,163,184,0.10)"},border:{color:"rgba(148,163,184,0.22)"},
+  };
+}
 // Cache em nível de módulo — sem isso, cada vez que o painel desmonta/remonta
 // (trocar de aba e voltar) o mapa reiniciava vazio e o nome "SN ####" (fallback)
 // piscava na tela até o fetch terminar de novo. `resetInverterMapCache` é chamado
@@ -1899,6 +1919,77 @@ function ImbalanceTable({ imbalanceData, selectedTime, alertC, fmtPct }) {
   );
 }
 
+// Curva de potência (Pac, kW) ao longo do dia, uma linha por inversor — mesmo formato do
+// gráfico de Combiners, só que por inversor em vez de por canal, pra achar em que horário
+// a geração cai.
+function GenerationCurveChart({ title, entries, pacMap }) {
+  const canvasRef = useRef(null);
+  const chartRef  = useRef(null);
+  const [ready, setReady] = useState(!!window._chartReady);
+  useEffect(()=>{ if(window._chartReady){registerSmartTooltip();setReady(true);return;} loadChartLibs().then(()=>setReady(true)); },[]);
+
+  useEffect(()=>{
+    if(!ready||!canvasRef.current) return;
+    if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}
+    if(!entries.length||!pacMap) return;
+
+    const timeSet = new Set();
+    entries.forEach(e=>(pacMap[e.invKey]||[]).forEach(s=>timeSet.add(s.time)));
+    const labels = [...timeSet].sort();
+    if(!labels.length) return;
+
+    const datasets = entries.map(e=>{
+      const bySample = new Map((pacMap[e.invKey]||[]).map(s=>[s.time,s.pac]));
+      return {
+        label: e.name,
+        data: labels.map(t=>{ const v=bySample.get(t); return (v!=null&&isFinite(v))?v:null; }),
+        borderColor: e.color, backgroundColor:"transparent",
+        borderWidth:1.5, pointRadius:0, pointHoverRadius:4, tension:0.35, spanGaps:false,
+      };
+    });
+
+    chartRef.current = new window.Chart(canvasRef.current,{
+      type:"line", data:{labels,datasets},
+      options:{
+        responsive:true, maintainAspectRatio:false, animation:false,
+        interaction:{mode:"index",intersect:false},
+        plugins:{
+          legend:{display:true,position:"bottom",labels:{color:"#8595A6",boxWidth:10,font:{size:10}}},
+          tooltip:{position:"smart",backgroundColor:"rgba(38,50,68,0.97)",titleColor:"#A7B6C6",bodyColor:"#EAF2FB",
+            borderColor:"rgba(46,155,255,0.40)",borderWidth:1,padding:10,
+            callbacks:{title:items=>items[0]?.label??"",
+              label:ctx=>`  ${ctx.dataset.label}: ${ctx.parsed.y!=null?ctx.parsed.y.toFixed(1)+" kW":"—"}`,
+              labelTextColor:ctx=>ctx.dataset.borderColor}},
+          zoom:{pan:{enabled:true,mode:"xy",threshold:10},
+            zoom:{wheel:{enabled:true,mode:"xy"},pinch:{enabled:false},drag:{enabled:false},mode:"xy"}},
+        },
+        scales:{
+          x: timeAxisScale(),
+          y:{position:"left",ticks:{color:"#8595A6",font:{size:11},maxTicksLimit:8,callback:v=>v.toFixed(0)+" kW"},
+            grid:{color:"rgba(148,163,184,0.10)"},border:{color:"rgba(148,163,184,0.22)"},
+            title:{display:true,text:"Potência (kW)",color:"#A7B6C6",font:{size:11}}},
+        },
+      },
+    });
+    return()=>{if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}};
+  },[ready,entries,pacMap]);
+
+  return(
+    <div style={{position:"relative",width:"100%",height:"100%",display:"flex",flexDirection:"column"}}>
+      <div style={{fontSize:12,fontWeight:600,color:"var(--color-text-secondary)",flexShrink:0,marginBottom:2}}>{title}</div>
+      <div style={{flex:1,minHeight:0,position:"relative"}}>
+        {(!ready||!entries.length||!pacMap)&&(
+          <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",
+            color:"var(--color-text-tertiary)",fontSize:13}}>
+            {!ready?"Carregando…":"Sem dados"}
+          </div>
+        )}
+        <canvas ref={canvasRef} role="img" style={{cursor:"crosshair"}} onDoubleClick={()=>chartRef.current?.resetZoom()}/>
+      </div>
+    </div>
+  );
+}
+
 // ── Painel de Geração ─────────────────────────────────────────────────────────
 const GEN_PERIOD_LABELS = { daily:"Diário", weekly:"7 dias", monthly:"Mensal" };
 
@@ -2017,7 +2108,8 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
     return min>0 ? (max-min)/min*100 : null;
   };
 
-  // Render gráfico (colunas ou linha) via Chart.js
+  // Render bar chart via Chart.js (ranking por inversor) — usado quando chartType==="bar"
+  // ou quando não há como montar a curva por horário (período diferente de diário)
   useEffect(()=>{
     if(!chartReady||!canvasRef.current||!genData.length) return;
     if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}
@@ -2031,27 +2123,11 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
     const labels=ordered.map(d=>d.name);
     const values=ordered.map(d=>d.spacer?null:d.gen*uF);
     const colors=ordered.map(d=>d.color);
-    const isLine=chartType==="line";
-    const valueAxis=isLine?"y":"x", labelAxis=isLine?"x":"y";
     chartRef.current=new window.Chart(canvasRef.current,{
-      type:isLine?"line":"bar",
+      type:"bar",
       data:{
         labels,
-        datasets:[isLine?{
-          label:"Geração (MWh)",
-          data:values,
-          borderColor:"#2E9BFF",
-          backgroundColor:"#2E9BFF",
-          borderWidth:2,
-          tension:0.35,
-          spanGaps:false, // quebra a linha no espaçador — separa final 1 / final 2 / outros
-          pointBackgroundColor:colors,
-          pointBorderColor:colors,
-          pointRadius:4,
-          pointHoverRadius:6,
-          pointBorderWidth:1.5,
-          fill:false,
-        }:{
+        datasets:[{
           label:"Geração (MWh)",
           data:values,
           backgroundColor:colors.map(c=>c+"cc"),
@@ -2061,7 +2137,7 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
         }]
       },
       options:{
-        indexAxis:isLine?"x":"y",  // linha: posição no eixo x, curva vertical · colunas: barras horizontais (mais legível com muitos inversores)
+        indexAxis:"y",  // barras horizontais — mais legível com muitos inversores
         responsive:true,maintainAspectRatio:false,animation:false,
         plugins:{
           legend:{display:false},
@@ -2069,25 +2145,61 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
             backgroundColor:"rgba(38,50,68,0.97)",titleColor:"#A7B6C6",bodyColor:"#EAF2FB",
             borderColor:"#e0e0e0",borderWidth:1,padding:10,
             callbacks:{
-              label:ctx=>`  ${ctx.parsed[valueAxis].toLocaleString("pt-BR",{maximumFractionDigits:uDecR})} ${unit}`,
+              label:ctx=>`  ${ctx.parsed.x.toLocaleString("pt-BR",{maximumFractionDigits:uDecR})} ${unit}`,
             }
           }
         },
         scales:{
-          [labelAxis]:{
-            ticks:{color:"#8595A6",font:{size:isLine?9:11},maxRotation:isLine?60:0,minRotation:isLine?60:0,autoSkip:true},
-            grid:{color:"rgba(0,0,0,0.04)"},border:{color:"rgba(0,0,0,0.12)"},
-          },
-          [valueAxis]:{
+          x:{
             ticks:{color:"#8595A6",font:{size:11}},
             grid:{color:"rgba(148,163,184,0.10)"},border:{color:"rgba(148,163,184,0.22)"},
             title:{display:true,text:unit,color:"#A7B6C6",font:{size:11}},
+          },
+          y:{
+            ticks:{color:"#8595A6",font:{size:11}},
+            grid:{color:"rgba(0,0,0,0.04)"},border:{color:"rgba(0,0,0,0.12)"},
           },
         },
       },
     });
     return()=>{if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}};
-  },[chartReady,groups,unit,chartType,uDecR]);
+  },[chartReady,groups,unit]);
+
+  // Curva por horário (Pac, kW) — só faz sentido no período Diário; busca sob demanda e cacheia por data
+  const showCurve = chartType==="line" && period==="daily";
+  const [pacByDate, setPacByDate] = useState({}); // { [date]: {[boardId]: [{time,pac}]} }
+  const [pacLoading, setPacLoading] = useState(false);
+  const [pacError, setPacError] = useState(null);
+
+  useEffect(()=>{
+    if(!showCurve || pacByDate[selDate]) return;
+    let cancelled = false;
+    (async()=>{
+      setPacLoading(true); setPacError(null);
+      try {
+        const res = await fetch(`/api/availability?date=${selDate}`);
+        if (!res.ok) {
+          const body = await res.json().catch(()=>({}));
+          throw new Error(body.error || `Erro ${res.status}`);
+        }
+        const data = await res.json();
+        if (!cancelled) setPacByDate(prev=>({...prev,[selDate]:data}));
+      } catch(err) {
+        if (!cancelled) setPacError(err.message);
+      } finally {
+        if (!cancelled) setPacLoading(false);
+      }
+    })();
+    return ()=>{ cancelled=true; };
+  },[showCurve, selDate, pacByDate]);
+
+  // Botão "Atualizar" também revalida a curva do dia selecionado
+  const lastPacTickRef = useRef(refreshTick);
+  useEffect(()=>{
+    if (refreshTick===lastPacTickRef.current) return;
+    lastPacTickRef.current = refreshTick;
+    setPacByDate(prev=>{ if(!(selDate in prev)) return prev; const {[selDate]:_,...rest}=prev; return rest; });
+  },[refreshTick, selDate]);
 
   const total   = genData.reduce((s,d)=>s+d.gen,0);
   const avg     = genData.length>0 ? total/genData.length : 0;
@@ -2131,16 +2243,22 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
         </div>
         {/* Toggle tipo de gráfico */}
         <div style={{display:"flex",gap:2,background:"var(--color-background-secondary)",padding:3,borderRadius:8,flexShrink:0}}>
-          {[{k:"bar",label:"Colunas",icon:"ti-chart-bar"},{k:"line",label:"Linha",icon:"ti-chart-line"}].map(({k,label,icon})=>(
-            <button key={k} onClick={()=>setChartType(k)}
-              title={k==="line"?"Gráfico em linha — mais fácil de ver em qual inversor/posição a geração cai":"Gráfico em colunas"}
-              style={{padding:"5px 12px",fontSize:13,cursor:"pointer",borderRadius:6,border:"none",display:"flex",alignItems:"center",gap:5,
-                background:chartType===k?"#2E9BFF":"transparent",
-                color:chartType===k?"#fff":"var(--color-text-secondary)",
-                fontWeight:chartType===k?600:400,transition:"all 0.15s"}}>
-              <i className={`ti ${icon}`}/>{label}
-            </button>
-          ))}
+          {[{k:"bar",label:"Colunas",icon:"ti-chart-bar"},{k:"line",label:"Linha",icon:"ti-chart-line"}].map(({k,label,icon})=>{
+            const disabled = k==="line" && period!=="daily";
+            return(
+              <button key={k} disabled={disabled} onClick={()=>!disabled&&setChartType(k)}
+                title={disabled?"Curva por horário disponível só no período Diário"
+                      :k==="line"?"Curva de potência (kW) ao longo do dia — mostra em que horário a geração cai"
+                      :"Gráfico em colunas (ranking por inversor)"}
+                style={{padding:"5px 12px",fontSize:13,borderRadius:6,border:"none",display:"flex",alignItems:"center",gap:5,
+                  cursor:disabled?"default":"pointer",opacity:disabled?0.4:1,
+                  background:chartType===k?"#2E9BFF":"transparent",
+                  color:chartType===k?"#fff":"var(--color-text-secondary)",
+                  fontWeight:chartType===k?600:400,transition:"all 0.15s"}}>
+                <i className={`ti ${icon}`}/>{label}
+              </button>
+            );
+          })}
         </div>
         {(period==="daily"||period==="weekly")&&(
           <div style={{display:"flex",alignItems:"center",gap:4}}>
@@ -2169,7 +2287,7 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
       {/* Corpo: gráfico + rankings */}
       <div style={{flex:1,display:"flex",gap:0,overflow:"hidden",minHeight:0}}>
 
-        {/* ── Gráfico de barras horizontais ── */}
+        {/* ── Gráfico: colunas (ranking) ou curva por horário ── */}
         <div style={{flex:1,minWidth:0,paddingRight:12,display:"flex",flexDirection:"column",overflow:"hidden"}}>
           <div style={{flex:1,minHeight:0,position:"relative"}}>
             {fatalError?(
@@ -2177,6 +2295,31 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
                 color:"var(--color-text-tertiary)",fontSize:13,textAlign:"center"}}>
                 <div><i className="ti ti-plug-connected-x" style={{fontSize:40,display:"block",marginBottom:8}}/>{fatalError}</div>
               </div>
+            ):showCurve?(
+              pacError?(
+                <div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",
+                  color:"var(--color-text-tertiary)",fontSize:13,textAlign:"center"}}>
+                  <div><i className="ti ti-plug-connected-x" style={{fontSize:40,display:"block",marginBottom:8}}/>{pacError}</div>
+                </div>
+              ):!chartReady||pacLoading||!genData.length?(
+                <div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",
+                  color:"var(--color-text-tertiary)",fontSize:13}}>
+                  {pacLoading?"Carregando…":!genData.length?"Sem dados para o período":"Carregando…"}
+                </div>
+              ):(
+                <div style={{display:"flex",flexDirection:"column",gap:8,height:"100%",minHeight:0}}>
+                  {groups.g1.length>0&&(
+                    <div style={{flex:1,minHeight:0}}>
+                      <GenerationCurveChart title="Final 1 (17 combiners)" entries={groups.g1} pacMap={pacByDate[selDate]}/>
+                    </div>
+                  )}
+                  {groups.g2.length>0&&(
+                    <div style={{flex:1,minHeight:0}}>
+                      <GenerationCurveChart title="Final 2 (16 combiners)" entries={groups.g2} pacMap={pacByDate[selDate]}/>
+                    </div>
+                  )}
+                </div>
+              )
             ):!chartReady||loading||!genData.length?(
               <div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",
                 color:"var(--color-text-tertiary)",fontSize:13}}>
@@ -2381,9 +2524,7 @@ function CombinerChart({ records, onPointClick }) {
             zoom:{wheel:{enabled:true,mode:"xy"},pinch:{enabled:false},drag:{enabled:false},mode:"xy"}},
         },
         scales:{
-          x:{afterBuildTicks:axis=>{const tks=axis.ticks;if(!tks.length)return;const toMin=l=>(l&&l.length>=5)?parseInt(l.slice(0,2),10)*60+parseInt(l.slice(3,5),10):null;const f=toMin(axis.getLabelForValue(tks[0].value)),lt=toMin(axis.getLabelForValue(tks[tks.length-1].value));const span=(f!=null&&lt!=null)?Math.max(1,Math.abs(lt-f)):60;const steps=[1,2,5,10,15,20,30,60,120,180];let step=180;for(const s of steps){if(span/s<=14){step=s;break;}}axis.ticks=tks.filter(tk=>{const m=toMin(axis.getLabelForValue(tk.value));return m!=null&&m%step===0;});},
-            ticks:{color:"#8595A6",font:{size:11},maxRotation:0,autoSkip:false,callback:function(value){return this.getLabelForValue(value)||"";}},
-            grid:{color:"rgba(148,163,184,0.10)"},border:{color:"rgba(148,163,184,0.22)"}},
+          x: timeAxisScale(),
           y:{position:"left",ticks:{color:"#8595A6",font:{size:11},maxTicksLimit:8,callback:v=>v.toFixed(0)+"A"},
             grid:{color:"rgba(148,163,184,0.10)"},border:{color:"rgba(148,163,184,0.22)"},
             title:{display:true,text:"Corrente DC (A)",color:"#A7B6C6",font:{size:11}}},
