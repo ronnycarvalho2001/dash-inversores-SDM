@@ -564,14 +564,66 @@ function useInverterMap(refreshTick) {
   return map;
 }
 
-function AvailabilityPanel({ onLastUpdated, refreshTick }) {
+// ── Caches de dados em nível de módulo + auto-sync a cada 15min ─────────────────
+// Mesma ideia do cache do mapa de inversores: sobrevivem a troca de aba, pra não
+// recarregar do zero. Um agendador central (no componente App, sempre montado)
+// busca os dados ~90s depois de cada marca de 15min (quando a API já tem a leitura
+// nova) e guarda aqui; cada painel só relê o cache quando `autoSyncTick` muda —
+// nenhum painel dispara fetch sozinho por causa do auto-sync.
+let _genRowsCache = null;   // [{sn,date,eInjection,eAbsorption}] — /api/generation (últimos 30 dias)
+let _pacCache = {};         // { [ymd]: {[boardId]: [{time,pac}]} } — /api/availability (Pac 15min), compartilhado entre Disponibilidade e a curva de Geração
+let _combinerCache = {};    // { [ymd]: {[GId]: {time,idc[]}[]} } — /api/stringbox, já agrupado por GId
+
+async function runAutoSync() {
+  const dates = last30Dates();
+  const today = dates[dates.length-1];
+  const results = await Promise.allSettled([
+    fetch(`/api/generation?from=${dates[0]}&to=${today}`),
+    fetch(`/api/availability?date=${today}`),
+    fetch(`/api/stringbox?date=${today}`),
+  ]);
+  const [genRes, pacRes, sbRes] = results;
+  if (genRes.status==="fulfilled" && genRes.value.ok) {
+    try { _genRowsCache = await genRes.value.json(); } catch { /* resposta inválida — mantém cache anterior */ }
+  }
+  if (pacRes.status==="fulfilled" && pacRes.value.ok) {
+    try { _pacCache = { ..._pacCache, [today]: await pacRes.value.json() }; } catch { /* idem */ }
+  }
+  if (sbRes.status==="fulfilled" && sbRes.value.ok) {
+    try { _combinerCache = { ..._combinerCache, [today]: groupStringboxByGId(await sbRes.value.json()) }; } catch { /* idem */ }
+  }
+}
+
+// Agenda a próxima sincronização pra 90s depois da marca de 15min mais próxima no futuro
+// (13:01:30, 13:16:30, 13:31:30…) — dá tempo da API upstream ter a leitura nova pronta.
+function useAutoSync() {
+  const [tick, setTick] = useState(0);
+  useEffect(()=>{
+    let timer, cancelled=false;
+    const QUARTER=15*60*1000, OFFSET=90*1000;
+    function schedule() {
+      const now=Date.now();
+      let next=Math.floor(now/QUARTER)*QUARTER+OFFSET;
+      if (next<=now) next+=QUARTER;
+      timer=setTimeout(async()=>{
+        await runAutoSync().catch(()=>{});
+        if (!cancelled) { setTick(t=>t+1); schedule(); }
+      }, next-now);
+    }
+    schedule();
+    return ()=>{ cancelled=true; clearTimeout(timer); };
+  },[]);
+  return tick;
+}
+
+function AvailabilityPanel({ onLastUpdated, refreshTick, autoSyncTick }) {
   const invMap = useInverterMap(refreshTick);
   const dates = useMemo(()=>last30Dates(),[]);
   const today = dates[dates.length-1];
   const [viewMode, setViewMode] = useState("daily");
   const [selDate, setSelDate] = useState(today);
   const [selMonth, setSelMonth] = useState(today.slice(0,6));
-  const [sampleCache, setSampleCache] = useState({}); // { [ymd]: {[sn]: {time,pac}[]} }
+  const [sampleCache, setSampleCache] = useState(()=>({..._pacCache})); // { [ymd]: {[sn]: {time,pac}[]} } — seedado do cache de módulo (compartilhado com a curva de Geração)
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState({loaded:0,total:0});
   const [fatalError, setFatalError] = useState(null);
@@ -601,6 +653,7 @@ function AvailabilityPanel({ onLastUpdated, refreshTick }) {
           }
           const data = await res.json();
           if (cancelled) return;
+          _pacCache = { ..._pacCache, [d]: data };
           setSampleCache(prev=>({...prev,[d]:data}));
           if (d===today) onLastUpdated?.(new Date());
           const cacheStatus = res.headers.get("X-Cache");
@@ -632,11 +685,21 @@ function AvailabilityPanel({ onLastUpdated, refreshTick }) {
         const res = await fetch(`/api/availability?date=${today}`);
         if (!res.ok) return;
         const data = await res.json();
+        _pacCache = { ..._pacCache, [today]: data };
         setSampleCache(prev=>({...prev,[today]:data}));
         onLastUpdated?.(new Date());
       } catch { /* falha silenciosa — usuário pode tentar de novo */ }
     })();
   },[refreshTick, today, onLastUpdated]);
+
+  // Auto-sync (a cada ~15min, roda sempre em segundo plano — ver useAutoSync no App):
+  // só relê "hoje" do cache já atualizado por runAutoSync, sem novo fetch.
+  const lastAvailAutoTickRef = useRef(autoSyncTick);
+  useEffect(()=>{
+    if (autoSyncTick===lastAvailAutoTickRef.current) return;
+    lastAvailAutoTickRef.current = autoSyncTick;
+    if (_pacCache[today]) { setSampleCache(prev=>({...prev,[today]:_pacCache[today]})); onLastUpdated?.(new Date()); }
+  },[autoSyncTick, today, onLastUpdated]);
 
   // Início calculado por inversor individualmente (sem smart start global)
 
@@ -1126,6 +1189,7 @@ function App() {
   const [lastUpdated,  setLastUpdated]  = useState(null); // Date da última leitura da API (avail/gen/combiners)
   const [refreshTick,  setRefreshTick]  = useState(0); // incrementa só quando o usuário clica "Atualizar"
   const [refreshing,   setRefreshing]   = useState(false);
+  const autoSyncTick = useAutoSync(); // incrementa sozinho a cada ~15min, sempre (independe da aba ativa)
   const fileRef = useRef();
 
   useEffect(()=>{ setLastUpdated(null); },[activeTab]);
@@ -1614,11 +1678,11 @@ function App() {
           background:"#131C28",borderRadius:14,border:"1px solid rgba(255,255,255,0.06)",
           boxShadow:"0 12px 32px -16px rgba(0,0,0,0.75)"}}>
           {activeTab==="combiners"?(
-            <CombinerPanel onLastUpdated={setLastUpdated} refreshTick={refreshTick}/>
+            <CombinerPanel onLastUpdated={setLastUpdated} refreshTick={refreshTick} autoSyncTick={autoSyncTick}/>
           ):activeTab==="avail"?(
-            <AvailabilityPanel onLastUpdated={setLastUpdated} refreshTick={refreshTick}/>
+            <AvailabilityPanel onLastUpdated={setLastUpdated} refreshTick={refreshTick} autoSyncTick={autoSyncTick}/>
           ):activeTab==="gen"?(
-            <GenerationPanel onLastUpdated={setLastUpdated} refreshTick={refreshTick}/>
+            <GenerationPanel onLastUpdated={setLastUpdated} refreshTick={refreshTick} autoSyncTick={autoSyncTick}/>
           ):!selectedDate||inverters.length===0?(
             <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
               color:"var(--color-text-tertiary)",gap:14,textAlign:"center"}}>
@@ -1922,16 +1986,19 @@ function ImbalanceTable({ imbalanceData, selectedTime, alertC, fmtPct }) {
 // Curva de potência (Pac, kW) ao longo do dia, uma linha por inversor — mesmo formato do
 // gráfico de Combiners, só que por inversor em vez de por canal, pra achar em que horário
 // a geração cai.
-function GenerationCurveChart({ entries, pacMap }) {
+function GenerationCurveChart({ entries, pacMap, viewKey }) {
   const canvasRef = useRef(null);
   const chartRef  = useRef(null);
+  const viewKeyRef = useRef(null); // identifica a "visão" atual (grupo+dia) — muda de verdade só quando o usuário navega
   const [ready, setReady] = useState(!!window._chartReady);
   useEffect(()=>{ if(window._chartReady){registerSmartTooltip();setReady(true);return;} loadChartLibs().then(()=>setReady(true)); },[]);
 
   useEffect(()=>{
     if(!ready||!canvasRef.current) return;
-    if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}
-    if(!entries.length||!pacMap) return;
+    if(!entries.length||!pacMap) {
+      if(chartRef.current){chartRef.current.destroy();chartRef.current=null;viewKeyRef.current=null;}
+      return;
+    }
 
     const timeSet = new Set();
     entries.forEach(e=>(pacMap[e.invKey]||[]).forEach(s=>timeSet.add(s.time)));
@@ -1948,6 +2015,17 @@ function GenerationCurveChart({ entries, pacMap }) {
       };
     });
 
+    // Mesma visão (grupo+dia) de antes — só atualiza os dados, preservando zoom/pan
+    // aplicado pelo usuário (destruir e recriar o Chart.js reseta o zoom).
+    if (chartRef.current && viewKeyRef.current===viewKey) {
+      chartRef.current.data.labels = labels;
+      chartRef.current.data.datasets = datasets;
+      chartRef.current.update("none");
+      return;
+    }
+
+    if (chartRef.current) chartRef.current.destroy();
+    viewKeyRef.current = viewKey;
     chartRef.current = new window.Chart(canvasRef.current,{
       type:"line", data:{labels,datasets},
       options:{
@@ -1971,8 +2049,9 @@ function GenerationCurveChart({ entries, pacMap }) {
         },
       },
     });
-    return()=>{if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}};
-  },[ready,entries,pacMap]);
+  },[ready,entries,pacMap,viewKey]);
+
+  useEffect(()=>()=>{if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}},[]);
 
   return(
     <div style={{position:"relative",width:"100%",height:"100%",display:"flex",flexDirection:"column"}}>
@@ -1992,7 +2071,7 @@ function GenerationCurveChart({ entries, pacMap }) {
 // ── Painel de Geração ─────────────────────────────────────────────────────────
 const GEN_PERIOD_LABELS = { daily:"Diário", weekly:"7 dias", monthly:"Mensal" };
 
-function GenerationPanel({ onLastUpdated, refreshTick }) {
+function GenerationPanel({ onLastUpdated, refreshTick, autoSyncTick }) {
   const invMap = useInverterMap(refreshTick);
   const dates = useMemo(()=>last30Dates(),[]);
   const today = dates[dates.length-1];
@@ -2000,8 +2079,8 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
   const [unit, setUnit]     = useState("MWh");
   const [chartType, setChartType] = useState("line"); // "line" (curva) ou "bar" (colunas)
   const [selDate, setSelDate] = useState(today);
-  const [rows, setRows] = useState([]); // [{sn,date,eInjection,eAbsorption}]
-  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState(()=>_genRowsCache || []); // [{sn,date,eInjection,eAbsorption}] — seedado do cache de módulo, se já existir
+  const [loading, setLoading] = useState(!_genRowsCache);
   const [fatalError, setFatalError] = useState(null);
   const uF  = unit==="kWh" ? 1000 : 1;                 // fator de conversão (gen é calculada em MWh)
   const uDec = unit==="kWh" ? 0 : 3;                   // casas decimais p/ total/média
@@ -2013,8 +2092,10 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
 
   useEffect(()=>{ if(window._chartReady){setChartReady(true);return;} loadChartLibs().then(()=>setChartReady(true)); },[]);
 
-  // Uma única chamada cobre os últimos 30 dias — groupbyday já devolve o range inteiro
+  // Só busca do zero se ainda não há nada no cache de módulo (primeiro carregamento da
+  // sessão) — trocar de aba e voltar reaproveita o que já foi buscado, sem recarregar.
   useEffect(()=>{
+    if (_genRowsCache) return;
     let cancelled = false;
     (async()=>{
       setLoading(true);
@@ -2025,6 +2106,7 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
           throw new Error(body.error || `Erro ${res.status}`);
         }
         const data = await res.json();
+        _genRowsCache = data;
         if (!cancelled) { setRows(data); onLastUpdated?.(new Date()); }
       } catch(err) {
         if (!cancelled) setFatalError(err.message);
@@ -2046,6 +2128,7 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
         const res = await fetch(`/api/generation?from=${dates[0]}&to=${dates[dates.length-1]}`);
         if (!res.ok) return;
         const data = await res.json();
+        _genRowsCache = data;
         setRows(data);
         onLastUpdated?.(new Date());
       } catch { /* falha silenciosa — usuário pode tentar de novo */ }
@@ -2164,9 +2247,10 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
     return()=>{if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}};
   },[chartReady,groups,unit,chartType,period]); // chartType/period: reconstrói ao voltar da curva por horário (canvas é remontado)
 
-  // Curva por horário (Pac, kW) — só faz sentido no período Diário; busca sob demanda e cacheia por data
+  // Curva por horário (Pac, kW) — só faz sentido no período Diário; busca sob demanda e cacheia
+  // por data no módulo (_pacCache é compartilhado com o painel de Disponibilidade)
   const showCurve = chartType==="line" && period==="daily";
-  const [pacByDate, setPacByDate] = useState({}); // { [date]: {[boardId]: [{time,pac}]} }
+  const [pacByDate, setPacByDate] = useState(()=>({..._pacCache})); // { [date]: {[boardId]: [{time,pac}]} }
   const [pacLoading, setPacLoading] = useState(false);
   const [pacError, setPacError] = useState(null);
 
@@ -2182,6 +2266,7 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
           throw new Error(body.error || `Erro ${res.status}`);
         }
         const data = await res.json();
+        _pacCache = { ..._pacCache, [selDate]: data };
         if (!cancelled) setPacByDate(prev=>({...prev,[selDate]:data}));
       } catch(err) {
         if (!cancelled) setPacError(err.message);
@@ -2197,8 +2282,19 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
   useEffect(()=>{
     if (refreshTick===lastPacTickRef.current) return;
     lastPacTickRef.current = refreshTick;
+    if (selDate===today) delete _pacCache[selDate];
     setPacByDate(prev=>{ if(!(selDate in prev)) return prev; const {[selDate]:_,...rest}=prev; return rest; });
-  },[refreshTick, selDate]);
+  },[refreshTick, selDate, today]);
+
+  // Auto-sync (a cada ~15min, roda sempre em segundo plano — ver useAutoSync no App):
+  // só relê os caches já atualizados por runAutoSync, sem novo fetch e sem tocar em seleção/zoom.
+  const lastGenAutoTickRef = useRef(autoSyncTick);
+  useEffect(()=>{
+    if (autoSyncTick===lastGenAutoTickRef.current) return;
+    lastGenAutoTickRef.current = autoSyncTick;
+    if (_genRowsCache) { setRows(_genRowsCache); onLastUpdated?.(new Date()); }
+    if (_pacCache[today]) setPacByDate(prev=>({...prev,[today]:_pacCache[today]}));
+  },[autoSyncTick, today, onLastUpdated]);
 
   const total   = genData.reduce((s,d)=>s+d.gen,0);
   const avg     = genData.length>0 ? total/genData.length : 0;
@@ -2309,12 +2405,12 @@ function GenerationPanel({ onLastUpdated, refreshTick }) {
                 <div style={{display:"flex",flexDirection:"column",gap:8,height:"100%",minHeight:0}}>
                   {groups.g1.length>0&&(
                     <div style={{flex:1,minHeight:0}}>
-                      <GenerationCurveChart entries={groups.g1} pacMap={pacByDate[selDate]}/>
+                      <GenerationCurveChart entries={groups.g1} pacMap={pacByDate[selDate]} viewKey={`g1|${selDate}`}/>
                     </div>
                   )}
                   {groups.g2.length>0&&(
                     <div style={{flex:1,minHeight:0}}>
-                      <GenerationCurveChart entries={groups.g2} pacMap={pacByDate[selDate]}/>
+                      <GenerationCurveChart entries={groups.g2} pacMap={pacByDate[selDate]} viewKey={`g2|${selDate}`}/>
                     </div>
                   )}
                 </div>
@@ -2484,9 +2580,10 @@ async function fetchStringboxDay(date, isToday, attempt=0) {
   return parsed;
 }
 
-function CombinerChart({ records, onPointClick }) {
+function CombinerChart({ records, onPointClick, viewKey }) {
   const canvasRef = useRef(null);
   const chartRef  = useRef(null);
+  const viewKeyRef = useRef(null); // identifica a "visão" atual (dia+combinador) — muda só quando o usuário navega
   const cbRef     = useRef(onPointClick);
   const [ready, setReady] = useState(!!window._chartReady);
   useEffect(()=>{ cbRef.current=onPointClick; },[onPointClick]);
@@ -2494,8 +2591,10 @@ function CombinerChart({ records, onPointClick }) {
 
   useEffect(()=>{
     if(!ready||!canvasRef.current) return;
-    if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}
-    if(!records.length) return;
+    if(!records.length) {
+      if(chartRef.current){chartRef.current.destroy();chartRef.current=null;viewKeyRef.current=null;}
+      return;
+    }
 
     const labels = records.map(r=>r.time);
     const channelCount = records.reduce((max,r)=>Math.max(max,r.idc.length),0);
@@ -2506,6 +2605,17 @@ function CombinerChart({ records, onPointClick }) {
       borderWidth:1.5, pointRadius:0, pointHoverRadius:4, tension:0.35, spanGaps:false,
     }));
 
+    // Mesma visão (dia+combinador) de antes — só atualiza os dados, preservando zoom/pan
+    // aplicado pelo usuário (destruir e recriar o Chart.js reseta o zoom).
+    if (chartRef.current && viewKeyRef.current===viewKey) {
+      chartRef.current.data.labels = labels;
+      chartRef.current.data.datasets = datasets;
+      chartRef.current.update("none");
+      return;
+    }
+
+    if (chartRef.current) chartRef.current.destroy();
+    viewKeyRef.current = viewKey;
     chartRef.current = new window.Chart(canvasRef.current,{
       type:"line", data:{labels,datasets},
       options:{
@@ -2530,8 +2640,9 @@ function CombinerChart({ records, onPointClick }) {
         },
       },
     });
-    return()=>{if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}};
-  },[ready,records]);
+  },[ready,records,viewKey]);
+
+  useEffect(()=>()=>{if(chartRef.current){chartRef.current.destroy();chartRef.current=null;}},[]);
 
   return(
     <div style={{position:"relative",width:"100%",height:"100%"}}>
@@ -2546,10 +2657,10 @@ function CombinerChart({ records, onPointClick }) {
   );
 }
 
-function CombinerPanel({ onLastUpdated, refreshTick }) {
+function CombinerPanel({ onLastUpdated, refreshTick, autoSyncTick }) {
   const dates = useMemo(()=>last30Dates(),[]);
   const today = dates[dates.length-1];
-  const [dayData, setDayData]   = useState({});   // { [date]: { [GId]: {time,idc[]}[] } }
+  const [dayData, setDayData]   = useState(()=>({..._combinerCache}));   // { [date]: { [GId]: {time,idc[]}[] } } — seedado do cache de módulo
   const [progress, setProgress] = useState({loaded:0,total:dates.length});
   const [selDate, setSelDate]   = useState(today);
   const [selGid, setSelGid]     = useState(null);
@@ -2565,25 +2676,30 @@ function CombinerPanel({ onLastUpdated, refreshTick }) {
     // corretamente remounts (StrictMode em dev, ou trocar de aba e voltar rápido):
     // o cleanup de uma execução antiga acabaria cancelando a corrida da nova.
     let cancelled = false;
-    const order = dates.slice().reverse(); // hoje primeiro (dado mais recente possível), depois regride no tempo
-    setProgress({loaded:0,total:order.length});
+    // "Hoje" sempre revalida; dias já presentes no cache de módulo (de uma visita anterior
+    // à aba, ou do auto-sync em segundo plano) não entram na fila — evita esperar o
+    // espaçamento de todo o laço de novo só pra reler dado que já temos.
+    const pending = dates.slice().reverse().filter(d=>d===today||!_combinerCache[d]);
+    setProgress({loaded:0,total:pending.length});
+    if (!pending.length) return;
 
     (async () => {
       let loaded = 0;
-      for (const date of order) {
+      for (const date of pending) {
         if (cancelled) return;
         const isToday = date === today;
         try {
           const parsed = await fetchStringboxDay(date, isToday);
           if (cancelled) return;
+          _combinerCache[date] = parsed;
           setDayData(prev=>({...prev,[date]:parsed}));
           if (isToday) onLastUpdated?.(new Date());
         } catch (err) {
           if (loaded===0) setFatalError(err.message);
         }
         loaded++;
-        setProgress({loaded, total:order.length});
-        if (date !== order[order.length-1]) {
+        setProgress({loaded, total:pending.length});
+        if (date !== pending[pending.length-1]) {
           await new Promise(r=>setTimeout(r, SB_FETCH_SPACING_MS));
         }
       }
@@ -2591,8 +2707,17 @@ function CombinerPanel({ onLastUpdated, refreshTick }) {
 
     return ()=>{ cancelled = true; };
     // refreshTick força reexecução (botão "Atualizar") — dias já em cache não geram requisição nova,
-    // só "hoje" de fato revalida, então é barato repetir o laço inteiro.
+    // só "hoje" de fato revalida.
   },[dates, today, onLastUpdated, refreshTick]);
+
+  // Auto-sync (a cada ~15min, roda sempre em segundo plano — ver useAutoSync no App):
+  // só relê "hoje" do cache já atualizado por runAutoSync — sem disparar o laço de 30 dias.
+  const lastCombinerAutoTickRef = useRef(autoSyncTick);
+  useEffect(()=>{
+    if (autoSyncTick===lastCombinerAutoTickRef.current) return;
+    lastCombinerAutoTickRef.current = autoSyncTick;
+    if (_combinerCache[today]) { setDayData(prev=>({...prev,[today]:_combinerCache[today]})); onLastUpdated?.(new Date()); }
+  },[autoSyncTick, today, onLastUpdated]);
 
   useEffect(()=>{ if(Object.keys(dayData).length>0 && fatalError) setFatalError(null); },[dayData, fatalError]);
 
@@ -2772,7 +2897,7 @@ function CombinerPanel({ onLastUpdated, refreshTick }) {
             <div style={{fontSize:13}}>Carregando combiners da API…</div>
           </div>
         ):(
-          <CombinerChart records={records} onPointClick={setSelectedTime}/>
+          <CombinerChart records={records} onPointClick={setSelectedTime} viewKey={`${selDate}|${selGid}`}/>
         )}
       </div>
 
